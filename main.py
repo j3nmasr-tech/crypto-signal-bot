@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SIRTS v6 – Top 50 Auto | Fully Optimized
+# SIRTS v6 – Top 100 Auto | Fully Optimized with Progress Log
 
 import os, time, requests, pandas as pd, numpy as np
 from datetime import datetime
@@ -33,7 +33,7 @@ def send_message(t):
                       data={"chat_id":CHAT_ID,"text":t},timeout=10)
     except: pass
 
-def get_top_symbols(n=50):
+def get_top_symbols(n=100):
     try:
         data=requests.get(BINANCE_24H,timeout=10).json()
         usdt=[d for d in data if d["symbol"].endswith("USDT")]
@@ -111,7 +111,7 @@ def get_sentiment():
 
 # ===== ANALYSIS =====
 def analyze(symbol):
-    confs,dirn,price=0,None,None
+    confs,dirn,price,tf_used=0,None,None,None
     for tf in TIMEFRAMES:
         df=get_klines(symbol,tf)
         if df is None or len(df)<50: continue
@@ -121,8 +121,8 @@ def analyze(symbol):
         vol=volume_ok(df)
         bull=sum([crt_b,ts_b,vol,bias=="bull"])*25
         bear=sum([crt_s,ts_s,vol,bias=="bear"])*25
-        if bull>=50: confs+=1; dirn,price="BUY",df["close"].iloc[-1]
-        elif bear>=50: confs+=1; dirn,price="SELL",df["close"].iloc[-1]
+        if bull>=50: confs+=1; dirn,price,tf_used="BUY",df["close"].iloc[-1],tf
+        elif bear>=50: confs+=1; dirn,price,tf_used="SELL",df["close"].iloc[-1],tf
     if confs>=2 and dirn and price:
         if time.time()-last_trade_time.get(symbol,0)<COOLDOWN_TIME: return
         last_trade_time[symbol]=time.time()
@@ -130,14 +130,14 @@ def analyze(symbol):
         sl,tp1,tp2,tp3=trade_params(symbol,price,dirn)
         size=pos_size(price,sl)
         if sent!="neutral": size*=0.5
-        save_trade(symbol,dirn,price,tp1,tp2,tp3,sl,int(confs*25),sent)
+        save_trade(symbol,dirn,price,tp1,tp2,tp3,sl,int(confs*25),sent,tf_used)
 
 # ===== SAVE / CHECK =====
-def save_trade(sym,side,entry,tp1,tp2,tp3,sl,conf,sent):
+def save_trade(sym,side,entry,tp1,tp2,tp3,sl,conf,sent,tf):
     global signals_sent_total
     signals_sent_total+=1
     open_trades.append({"s":sym,"side":side,"entry":entry,"tp1":tp1,"tp2":tp2,"tp3":tp3,"sl":sl,"st":"open"})
-    msg=(f"✅ {side} {sym} @ {entry}\n🎯 TP1:{tp1}\n🛑 SL:{sl}\n💰 Size:{pos_size(entry,sl)}"
+    msg=(f"✅ {side} {sym} ({tf}) @ {entry}\n🎯 TP1:{tp1}\n🛑 SL:{sl}\n💰 Size:{pos_size(entry,sl)}"
          f"\n🤖 Conf:{conf}% | Sent:{sent}")
     send_message(msg)
 
@@ -163,12 +163,16 @@ def summary():
                  f"\n❌Fails:{signals_fail_total}\n🎯Acc:{acc:.1f}%")
 
 # ===== MAIN =====
-send_message("✅ Bot started (SIRTS v6 Top 50 Auto)")
-SYMBOLS=get_top_symbols(50)
+send_message("✅ Bot started (SIRTS v6 Top 100 Auto)")
+SYMBOLS=get_top_symbols(100)
 
 while True:
     try:
-        for s in SYMBOLS: analyze(s); time.sleep(0.3)
+        for i,s in enumerate(SYMBOLS,1):
+            analyze(s)
+            if i % 10 == 0:
+                print(f"Analyzed {i}/{len(SYMBOLS)} symbols...")
+            time.sleep(0.3)
         check_trades()
         now=time.time()
         if now-last_heartbeat>43200: heartbeat(); last_heartbeat=now
