@@ -1,11 +1,15 @@
-import requests, time, pandas as pd, numpy as np
-
-# === YOUR SETTINGS ===
-TELEGRAM_TOKEN = "7857420181:AAHGfifzuG1vquuXSLLM8Dz_e356h0ZnCV8"
-CHAT_ID = "7087925615"
 import requests
+import time
+import pandas as pd
+import numpy as np
 
-# Send a test message to confirm Telegram connection
+# ===============================
+# 🔧 Telegram configuration
+# ===============================
+BOT_TOKEN = "7857420181:AAHGfifzuG1vquuXSLLM8Dz_e356h0ZnCV8"
+CHAT_ID = "7087925615"
+
+# Send test message to confirm Telegram connection
 test_msg = "✅ Bot is online and running on Render!"
 requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?chat_id={CHAT_ID}&text={test_msg}")
 SYMBOLS = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
