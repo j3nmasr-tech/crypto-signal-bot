@@ -461,7 +461,8 @@ while True:
             heartbeat(); last_heartbeat = now
         if now - last_summary > 86400:
             summary(); last_summary = now
-        print("Cycle", datetime.utcnow().strftime("%H:%M:%S"), "UTC")
+from datetime import datetime, UTC
+print("Cycle", datetime.now(UTC).strftime("%H:%M:%S"), "UTC")
         time.sleep(CHECK_INTERVAL)
     except Exception as e:
         print("Main loop error:", e)
