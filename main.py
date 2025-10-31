@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
-# SIRTS v9 - Top 100 | Scalps + Swing | Single-message signals, 80%+ filter, breakdown, adaptive risk, heartbeat & summary
-# Requires: requests, pandas, numpy, pytz
+# SIRTS v9.2 - Top 100 | Full Trade Tracking, Persistence, & Memory Fix
+# Requires: requests, pandas, numpy
+#
+# --- v9.2 Fixes ---
+# - FEATURE: Added `check_open_trades()` to monitor TP1/SL.
+# - FEATURE: Added `save_state()` & `load_state()` for persistence on restart.
+# - FIX: `open_trades` list is now correctly managed (no memory leak).
+# - FIX: Daily summary now reports correct Hit/Fail stats.
+# - CRITICAL: Reads BOT_TOKEN & CHAT_ID from environment variables.
 
 import os, time, requests, pandas as pd, numpy as np
 from datetime import datetime, timezone
 import csv
+import json # Added for state persistence
 
 # ===== CONFIG =====
-BOT_TOKEN = "7857420181:AAHGfifzuG1vquuXSLLM8Dz_e356h0ZnCV8"
-CHAT_ID   = "7087925615"
+# !! CRITICAL: Set these in your environment, do not hardcode them!
+BOT_TOKEN = os.environ.get("BOT_TOKEN") 
+CHAT_ID   = os.environ.get("CHAT_ID")
 
 CAPITAL = 50.0
 BASE_RISK = 0.02
@@ -37,9 +46,11 @@ BINANCE_PRICE  = "https://api.binance.com/api/v3/ticker/price"
 BINANCE_24H    = "https://api.binance.com/api/v3/ticker/24hr"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
 
-LOG_CSV = "/tmp/sirts_v9_top100_signals.csv"
+LOG_CSV = "sirts_v9_top100_signals.csv" 
+STATE_FILE = "sirts_v9_state.json" # Persistence file
 
 # ===== STATE =====
+# These are now loaded from STATE_FILE on startup
 last_trade_time = {}
 open_trades = []
 signals_sent_total = 0
@@ -53,7 +64,7 @@ volatility_pause_until = 0
 # ===== HELPERS =====
 def send_message(text):
     if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram not configured.")
+        print("Telegram BOT_TOKEN or CHAT_ID not configured in environment variables.")
         return False
     try:
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
@@ -193,8 +204,7 @@ def get_fear_greed_value():
     try: return int(j["data"][0]["value"])
     except: return 50
 
-def sentiment_label():
-    v=get_fear_greed_value()
+def sentiment_label(v): 
     if v<25: return "fear"
     if v>75: return "greed"
     return "neutral"
@@ -220,7 +230,7 @@ def btc_volatility_spike():
     pct=(c2-c0)/c0*100.0
     return abs(pct)>=VOLATILITY_THRESHOLD_PCT
 
-# ===== LOGGING =====
+# ===== LOGGING & STATE =====
 def init_csv():
     try:
         if not os.path.exists(LOG_CSV):
@@ -241,10 +251,115 @@ def log_signal(row):
     except Exception as e:
         print("log_signal error",e)
 
+def save_state():
+    state = {
+        "open_trades": open_trades,
+        "signals_sent_total": signals_sent_total,
+        "signals_hit_total": signals_hit_total,
+        "signals_fail_total": signals_fail_total,
+        "total_checked_signals": total_checked_signals,
+        "skipped_signals": skipped_signals,
+        "last_trade_time": last_trade_time,
+        "last_summary": last_summary,
+        "last_heartbeat": last_heartbeat,
+    }
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print(f"Error saving state: {e}")
+
+def load_state():
+    global open_trades, signals_sent_total, signals_hit_total, signals_fail_total, \
+            total_checked_signals, skipped_signals, last_trade_time, last_summary, last_heartbeat
+    
+    if not os.path.exists(STATE_FILE):
+        print("No state file found, starting fresh.")
+        return
+    
+    try:
+        with open(STATE_FILE, "r") as f:
+            state = json.load(f)
+        
+        open_trades = state.get("open_trades", [])
+        signals_sent_total = state.get("signals_sent_total", 0)
+        signals_hit_total = state.get("signals_hit_total", 0)
+        signals_fail_total = state.get("signals_fail_total", 0)
+        total_checked_signals = state.get("total_checked_signals", 0)
+        skipped_signals = state.get("skipped_signals", 0)
+        last_trade_time = state.get("last_trade_time", {})
+        last_summary = state.get("last_summary", time.time())
+        last_heartbeat = state.get("last_heartbeat", time.time())
+        print(f"Loaded state: {len(open_trades)} open trades, {signals_sent_total} signals sent.")
+    except Exception as e:
+        print(f"Error loading state file (corrupt?): {e}. Starting fresh.")
+        open_trades = [] # Start fresh if file is corrupt
+
+
+# ===== NEW: TRADE TRACKING =====
+def check_open_trades():
+    global open_trades, signals_hit_total, signals_fail_total
+    if not open_trades:
+        return
+
+    print(f"Checking {len(open_trades)} open trades...")
+    still_open_trades = []
+    
+    for trade in open_trades:
+        symbol = trade["s"]
+        price = get_price(symbol)
+        
+        if price is None:
+            print(f"Could not get price for {symbol}, keeping trade open.")
+            still_open_trades.append(trade)
+            continue
+
+        side = trade["side"]
+        tp1 = trade["tp1"]
+        sl = trade["sl"]
+        entry = trade["entry"]
+        
+        hit = False
+        fail = False
+
+        if side == "BUY":
+            if price >= tp1:
+                hit = True
+            elif price <= sl:
+                fail = True
+        elif side == "SELL":
+            if price <= tp1:
+                hit = True
+            elif price >= sl:
+                fail = True
+        
+        if hit:
+            signals_hit_total += 1
+            pnl_pct = abs((tp1 - entry) / entry) * 100 * LEVERAGE
+            send_message(f"✅ HIT TP1: {symbol} {side} @ {tp1}. PnL: ~{pnl_pct:.2f}%")
+        elif fail:
+            signals_fail_total += 1
+            pnl_pct = abs((sl - entry) / entry) * 100 * LEVERAGE
+            send_message(f"❌ HIT SL: {symbol} {side} @ {sl}. PnL: ~-{pnl_pct:.2f}%")
+        else:
+            # Trade is still open
+            still_open_trades.append(trade)
+        
+        time.sleep(0.1) # Be nice to Binance API
+
+    open_trades = still_open_trades # This is the fix.
+
 # ===== ANALYSIS =====
-def analyze_symbol(symbol):
+def analyze_symbol(symbol, sentiment, btc_agree, btc_dir, btc_sma_trend):
     global total_checked_signals, skipped_signals, signals_sent_total
     total_checked_signals+=1
+    
+    # Don't open a new trade if one is already open for this symbol
+    for trade in open_trades:
+        if trade["s"] == symbol:
+            # print(f"Skipping {symbol}, trade already open.")
+            return False
+            
     vol24=get_24h_quote_volume(symbol)
     if vol24<MIN_QUOTE_VOLUME:
         skipped_signals+=1
@@ -257,7 +372,6 @@ def analyze_symbol(symbol):
     confirming_tfs=[]
     breakdown_per_tf={}
 
-    # Decide if scalping or swing
     for tf in ALL_TFS:
         df=get_klines(symbol,tf)
         if df is None or len(df)<60:
@@ -303,12 +417,11 @@ def analyze_symbol(symbol):
 
     if tf_confirmations>=CONF_MIN_TFS and chosen_dir and chosen_entry:
         confidence_pct=int(tf_confirmations*25)
-        sentiment=sentiment_label()
+        
         if sentiment in ("fear","greed"):
             skipped_signals+=1
             return False
 
-        btc_agree, btc_dir, btc_sma_trend=btc_trend_agree()
         if btc_agree is None:
             skipped_signals+=1
             return False
@@ -320,6 +433,7 @@ def analyze_symbol(symbol):
             if not ((chosen_dir=="BUY" and btc_sma_trend=="bull") or (chosen_dir=="SELL" and btc_sma_trend=="bear")):
                 skipped_signals+=1
                 return False
+        
         if time.time()-last_trade_time.get(symbol,0)<COOLDOWN_TIME:
             return False
         last_trade_time[symbol]=time.time()
@@ -331,10 +445,8 @@ def analyze_symbol(symbol):
         sl,tp1,tp2,tp3=params
         units,margin_required,exposure,used_risk=pos_size_units(chosen_entry,sl,confidence_pct)
 
-        # Determine type
         trade_type="SCALP" if chosen_tf in SCALP_TFS else "SWING"
 
-        # Message
         confirmed_list=", ".join(confirming_tfs) if confirming_tfs else chosen_tf
         per_tf_lines=[]
         for tf in ALL_TFS:
@@ -354,18 +466,25 @@ def analyze_symbol(symbol):
                 f"💰 Units:{units} | Margin≈${margin_required} | Exposure≈${exposure}\n"
                 f"⚠ Risk used: {used_risk*100:.2f}% | Sentiment: {sentiment}")
         full_msg=f"{header}\n\n📊 Per-TF: {per_tf_text}"
-        send_message(full_msg)
-
-        open_trades.append({"s":symbol,"side":chosen_dir,"entry":chosen_entry,"tp1":tp1,"tp2":tp2,"tp3":tp3,"sl":sl,"st":"open","units":units})
-        ts=datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-        log_signal([ts,symbol,chosen_dir,chosen_entry,tp1,sl,confidence_pct,sentiment,chosen_tf,units,margin_required,exposure,f"{used_risk*100:.2f}%","open",per_tf_text])
-        signals_sent_total+=1
-        return True
+        
+        if send_message(full_msg):
+            # Only add to open_trades if the message was sent successfully
+            open_trades.append({"s":symbol,"side":chosen_dir,"entry":chosen_entry,"tp1":tp1,"tp2":tp2,"tp3":tp3,"sl":sl,"st":"open","units":units})
+            ts=datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+            log_signal([ts,symbol,chosen_dir,chosen_entry,tp1,sl,confidence_pct,sentiment,chosen_tf,units,margin_required,exposure,f"{used_risk*100:.2f}%","open",per_tf_text])
+            signals_sent_total+=1
+            return True
     return False
 
 # ===== STARTUP =====
+if not BOT_TOKEN or not CHAT_ID:
+    print("FATAL: BOT_TOKEN or CHAT_ID environment variables are not set.")
+    print("Please set them and restart the script.")
+    exit()
+
+load_state() # Load previous state on startup
 init_csv()
-send_message("✅ SIRTS v9 Top 100 deployed — scalps + swing, 80%+ filter active.")
+send_message("✅ SIRTS v9.2 Top 100 deployed — Full tracking & persistence active.")
 
 try:
     SYMBOLS=get_top_symbols(100)
@@ -376,35 +495,65 @@ except:
 # ===== MAIN LOOP =====
 while True:
     try:
+        if time.time() < volatility_pause_until:
+            print(f"Volatility pause active. Sleeping for {CHECK_INTERVAL}s...")
+            time.sleep(CHECK_INTERVAL)
+            continue
+            
         if btc_volatility_spike():
             volatility_pause_until=time.time()+VOLATILITY_PAUSE
             send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
+            continue 
+
+        # --- NEW: Check open trades first ---
+        check_open_trades()
+
+        # --- Fetch global filters ONCE per loop ---
+        print("Fetching global filters (BTC Trend & FNG)...")
+        fng_val = get_fear_greed_value()
+        current_sentiment = sentiment_label(fng_val)
+        btc_agree, btc_dir, btc_sma_trend = btc_trend_agree()
+        
+        if btc_agree is None:
+            print("Could not fetch BTC trend, skipping cycle.")
+            time.sleep(60)
+            continue
+        print(f"Global Filters: Sentiment={current_sentiment} (v:{fng_val}), BTC Dir={btc_dir}, BTC SMA Trend={btc_sma_trend}")
+        
         for i,sym in enumerate(SYMBOLS,start=1):
-            analyze_symbol(sym)
+            analyze_symbol(sym, current_sentiment, btc_agree, btc_dir, btc_sma_trend)
+            
             if i%10==0:
                 print(f"Analyzed {i}/{len(SYMBOLS)} symbols...")
             time.sleep(0.25)
+            
         now=time.time()
         if now-last_heartbeat>43200:
-            send_message(f"💓 Heartbeat OK {datetime.now(timezone.utc).strftime('%H:%M UTC')}")
+            send_message(f"💓 Heartbeat OK {datetime.now(timezone.utc).strftime('%H:%M UTC')}. {len(open_trades)} trades open.")
             last_heartbeat=now
+            
         if now-last_summary>86400:
             total=signals_sent_total
             hits=signals_hit_total
             fails=signals_fail_total
-            acc=(hits/total*100) if total>0 else 0.0
+            running = total - (hits + fails)
+            acc=(hits/(hits+fails)*100) if (hits+fails)>0 else 0.0
             send_message(
                 "📊 Daily Summary\n"
                 f"Signals Sent: {total}\n"
                 f"Signals Checked: {total_checked_signals}\n"
                 f"Signals Skipped: {skipped_signals}\n"
-                f"✅ Hits: {hits}\n"
-                f"❌ Fails: {fails}\n"
+                f"✅ Hits (TP1): {hits}\n"
+                f"❌ Fails (SL): {fails}\n"
+                f"🏃 Running: {running}\n"
                 f"🎯 Accuracy: {acc:.1f}%"
             )
             last_summary=now
+            
         print("Cycle",datetime.now(timezone.utc).strftime("%H:%M:%S"),"UTC")
+        save_state() # Save state at the end of each cycle
         time.sleep(CHECK_INTERVAL)
+        
     except Exception as e:
         print("Main loop error:",e)
         time.sleep(15)
