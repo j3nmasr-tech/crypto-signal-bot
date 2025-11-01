@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # SIRTS v9 – Top 100 | Pure scalp signals | 100% confirmation | CRT + Turtle + Wave + Volume + Bias
-# Upgrades: A→E implemented
 # Requirements: requests, pandas, numpy, pytz
 # BOT_TOKEN and CHAT_ID must be set as environment variables: “BOT_TOKEN”, “CHAT_ID”
 
@@ -9,9 +8,8 @@ import time
 import requests
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 import csv
-import threading
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -20,9 +18,9 @@ CHAT_ID   = os.getenv("CHAT_ID")
 CAPITAL = 50.0
 LEVERAGE = 30
 COOLDOWN_TIME = 1800
-VOLATILITY_THRESHOLD_PCT = 2.0
-VOLATILITY_PAUSE = 1800
-CHECK_INTERVAL = 60
+VOLATILITY_THRESHOLD_PCT = 2.0   # % move for BTC to trigger pause
+VOLATILITY_PAUSE = 1800           # 30 minutes
+CHECK_INTERVAL = 60               # seconds between full scans
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
 WEIGHT_BIAS   = 0.40
@@ -30,8 +28,8 @@ WEIGHT_TURTLE = 0.25
 WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
-MIN_TF_SCORE  = 50
-CONF_MIN_TFS  = len(TIMEFRAMES)
+MIN_TF_SCORE  = 50               # per‐TF threshold
+CONF_MIN_TFS  = len(TIMEFRAMES) # require 100% confirmation
 MIN_QUOTE_VOLUME = 1_000_000.0
 
 BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
@@ -39,7 +37,7 @@ BINANCE_PRICE  = "https://api.binance.com/api/v3/ticker/price"
 BINANCE_24H    = "https://api.binance.com/api/v3/ticker/24hr"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
 
-LOG_CSV = os.path.join(os.path.dirname(__file__), "sirts_v9_top100_signals.csv")
+LOG_CSV = "./sirts_v9_top100_signals.csv"
 
 # ===== RISK & CONFIDENCE =====
 BASE_RISK = 0.02
@@ -47,24 +45,22 @@ MAX_RISK  = 0.06
 MIN_RISK  = 0.01
 
 # ===== STATE =====
-last_trade_time       = {}
-open_trades           = []
-signals_sent_total    = 0
-signals_hit_total     = 0
-signals_fail_total    = 0
-signals_breakeven     = 0
-total_checked_signals = 0
-skipped_signals       = 0
-last_heartbeat        = time.time()
-last_summary          = time.time()
+last_trade_time      = {}
+open_trades          = []
+signals_sent_total   = 0
+signals_hit_total    = 0
+signals_fail_total   = 0
+signals_breakeven    = 0
+total_checked_signals= 0
+skipped_signals      = 0
+last_heartbeat       = time.time()
+last_summary         = time.time()
 volatility_pause_until= 0
 
 STATS = {
     "by_side": {"BUY": {"sent":0,"hit":0,"fail":0,"breakeven":0}, "SELL":{"sent":0,"hit":0,"fail":0,"breakeven":0}},
     "by_tf": {tf: {"sent":0,"hit":0,"fail":0,"breakeven":0} for tf in TIMEFRAMES}
 }
-
-lock = threading.Lock()
 
 # ===== HELPERS =====
 def send_message(text):
@@ -87,7 +83,7 @@ def safe_get_json(url, params=None, timeout=8):
         return None
 
 def get_top_symbols(n=100):
-    data = safe_get_json(BINANCE_24H)
+    data = safe_get_json(BINANCE_24H, {})
     if not data:
         return ["BTCUSDT","ETHUSDT"]
     usdt = [d for d in data if d.get("symbol","").endswith("USDT")]
@@ -156,8 +152,7 @@ def volume_ok(df):
     if np.isnan(ma):
         return True
     return df["volume"].iloc[-1] > ma * 1.2
-
-# ===== ATR & POSITION SIZING =====
+    # ===== ATR & POSITION SIZING =====
 def get_atr(symbol, period=14):
     df = get_klines(symbol, "1h", period+1)
     if df is None or len(df) < period+1:
@@ -205,7 +200,7 @@ def pos_size_units(entry, sl, confidence_pct):
 
 # ===== SENTIMENT =====
 def get_fear_greed_value():
-    j = safe_get_json(FNG_API)
+    j = safe_get_json(FNG_API, {})
     try:
         return int(j["data"][0]["value"])
     except:
@@ -251,18 +246,16 @@ def init_csv():
 
 def log_signal(row):
     try:
-        with lock:
-            with open(LOG_CSV,"a", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(row)
+        with open(LOG_CSV,"a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(row)
     except Exception as e:
         print("log_signal error:", e)
 
-# ===== ANALYSIS =====
+# ===== ANALYSIS & SIGNAL GENERATION =====
 def analyze_symbol(symbol):
     global total_checked_signals, skipped_signals, signals_sent_total, last_trade_time, volatility_pause_until, STATS
     total_checked_signals += 1
-
     if time.time() < volatility_pause_until:
         return False
 
@@ -327,29 +320,213 @@ def analyze_symbol(symbol):
         confidence_pct = max(0.0, min(100.0, confidence_pct))
 
         if confidence_pct < 80.0:
-            print(f"Skipping {symbol}: confidence too low ({confidence_pct:.1f}%). Minimum 80%.")
+            print(f"Skipping {symbol}: confidence too low ({confidence_pct:.1f}%).")
             return False
 
-        if chosen_dir == "SELL":
-            if all(breakdown_per_tf.get(tf, {}).get("bias") == "bull" for tf in ["15m", "30m"]):
-                return False
-        elif chosen_dir == "BUY":
-            if all(breakdown_per_tf.get(tf, {}).get("bias") == "bear" for tf in ["15m", "30m"]):
-                return False
+        if time.time() - last_trade_time.get(symbol, 0) < COOLDOWN_TIME:
+            print(f"Cooldown active for {symbol}, skipping.")
+            return False
+        last_trade_time[symbol] = time.time()
 
-        voloks = sum(1 for tf in TIMEFRAMES if breakdown_per_tf.get(tf, {}).get("vol_ok"))
-        if voloks < 3:
+        sentiment = sentiment_label()
+        if sentiment in ("fear", "greed"):
+            skipped_signals += 1
+            print(f"Skipping {symbol} due to sentiment {sentiment}.")
             return False
 
-        if chosen_dir == "SELL":
-            if any(breakdown_per_tf.get(tf, {}).get("bull_score", 0) > 50 for tf in ["15m", "30m"]):
-                return False
-        else:
-            if any(breakdown_per_tf.get(tf, {}).get("bear_score", 0) > 50 for tf in ["15m", "30m"]):
-                return False
+        atr_val = get_atr(symbol)
+        entry = get_price(symbol)
+        if entry is None:
+            skipped_signals += 1
+            return False
 
-        df_last = get_klines(symbol, "15m", 2)
-        if df_last is not None and len(df_last) >= 1:
-            last_open, last_close = df_last["open"].iloc[-1], df_last["close"].iloc[-1]
-            if chosen_dir == "SELL" and last_close > last_open: return False
-            if
+        conf_multiplier = max(0.5, min(1.3, confidence_pct / 100.0 + 0.5))
+        sl, tp1, tp2, tp3 = trade_params(symbol, entry, chosen_dir, conf_multiplier=conf_multiplier)
+        if not sl:
+            skipped_signals += 1
+            return False
+
+        units, margin, exposure, risk_used = pos_size_units(entry, sl, confidence_pct)
+
+        header = (f"✅ {chosen_dir} {symbol} (100% CONF)\n"
+                  f"💵 Entry: {entry}\n"
+                  f"🎯 TP1:{tp1} TP2:{tp2} TP3:{tp3}\n"
+                  f"🛑 SL: {sl}\n"
+                  f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
+                  f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}")
+
+        send_message(header)
+        trade_obj = {
+            "s": symbol,
+            "side": chosen_dir,
+            "entry": entry,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "sl": sl,
+            "st": "open",
+            "units": units,
+            "margin": margin,
+            "exposure": exposure,
+            "risk_pct": risk_used,
+            "confidence_pct": confidence_pct,
+            "tp1_taken": False,
+            "tp2_taken": False,
+            "tp3_taken": False,
+            "placed_at": time.time(),
+            "entry_tf": chosen_tf,
+        }
+        open_trades.append(trade_obj)
+        signals_sent_total += 1
+        STATS["by_side"][chosen_dir]["sent"] += 1
+        STATS["by_tf"][chosen_tf]["sent"] += 1
+        log_signal([
+            datetime.utcnow().isoformat(), symbol, chosen_dir, entry,
+            tp1, tp2, tp3, sl, chosen_tf, units, margin, exposure,
+            risk_used*100, confidence_pct, "open", ""
+        ])
+        print(f"✅ Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
+        return True
+    return False
+    # ===== TRADE CHECK (TP/SL/BREAKEVEN) =====
+def check_trades():
+    global signals_hit_total, signals_fail_total, signals_breakeven, STATS
+    for t in list(open_trades):
+        if t.get("st") != "open":
+            continue
+        p = get_price(t["s"])
+        if p is None:
+            continue
+        side = t["side"]
+
+        if side == "BUY":
+            if not t["tp1_taken"] and p >= t["tp1"]:
+                t["tp1_taken"] = True
+                t["sl"] = t["entry"]
+                send_message(f"🎯 {t['s']} TP1 Hit {p} — SL moved to breakeven.")
+                STATS["by_side"]["BUY"]["hit"] += 1
+                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
+                signals_hit_total += 1
+                continue
+            if t["tp1_taken"] and not t["tp2_taken"] and p >= t["tp2"]:
+                t["tp2_taken"] = True
+                send_message(f"🎯 {t['s']} TP2 Hit {p}")
+                STATS["by_side"]["BUY"]["hit"] += 1
+                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
+                signals_hit_total += 1
+                continue
+            if t["tp2_taken"] and not t["tp3_taken"] and p >= t["tp3"]:
+                t["tp3_taken"] = True
+                t["st"] = "closed"
+                send_message(f"🏁 {t['s']} TP3 Hit {p} — Trade closed.")
+                STATS["by_side"]["BUY"]["hit"] += 1
+                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
+                signals_hit_total += 1
+                continue
+            if p <= t["sl"]:
+                if abs(t["sl"] - t["entry"]) < 1e-8:
+                    t["st"] = "breakeven"
+                    signals_breakeven += 1
+                    STATS["by_side"]["BUY"]["breakeven"] += 1
+                    STATS["by_tf"][t["entry_tf"]]["breakeven"] += 1
+                    send_message(f"⚖️ {t['s']} Breakeven SL Hit {p}")
+                else:
+                    t["st"] = "fail"
+                    signals_fail_total += 1
+                    STATS["by_side"]["BUY"]["fail"] += 1
+                    STATS["by_tf"][t["entry_tf"]]["fail"] += 1
+                    send_message(f"❌ {t['s']} SL Hit {p}")
+        else:  # SELL
+            if not t["tp1_taken"] and p <= t["tp1"]:
+                t["tp1_taken"] = True
+                t["sl"] = t["entry"]
+                send_message(f"🎯 {t['s']} TP1 Hit {p} — SL moved to breakeven.")
+                STATS["by_side"]["SELL"]["hit"] += 1
+                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
+                signals_hit_total += 1
+                continue
+            if t["tp1_taken"] and not t["tp2_taken"] and p <= t["tp2"]:
+                t["tp2_taken"] = True
+                send_message(f"🎯 {t['s']} TP2 Hit {p}")
+                STATS["by_side"]["SELL"]["hit"] += 1
+                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
+                signals_hit_total += 1
+                continue
+            if t["tp2_taken"] and not t["tp3_taken"] and p <= t["tp3"]:
+                t["tp3_taken"] = True
+                t["st"] = "closed"
+                send_message(f"🏁 {t['s']} TP3 Hit {p} — Trade closed.")
+                STATS["by_side"]["SELL"]["hit"] += 1
+                STATS["by_tf"][t["entry_tf"]]["hit"] += 1
+                signals_hit_total += 1
+                continue
+            if p >= t["sl"]:
+                if abs(t["sl"] - t["entry"]) < 1e-8:
+                    t["st"] = "breakeven"
+                    signals_breakeven += 1
+                    STATS["by_side"]["SELL"]["breakeven"] += 1
+                    STATS["by_tf"][t["entry_tf"]]["breakeven"] += 1
+                    send_message(f"⚖️ {t['s']} Breakeven SL Hit {p}")
+                else:
+                    t["st"] = "fail"
+                    signals_fail_total += 1
+                    STATS["by_side"]["SELL"]["fail"] += 1
+                    STATS["by_tf"][t["entry_tf"]]["fail"] += 1
+                    send_message(f"❌ {t['s']} SL Hit {p}")
+
+# ===== HEARTBEAT & SUMMARY =====
+def heartbeat():
+    send_message(f"💓 Heartbeat OK {datetime.utcnow().strftime('%H:%M UTC')}")
+    print("💓 Heartbeat sent.")
+
+def summary():
+    total = signals_sent_total
+    hits  = signals_hit_total
+    fails = signals_fail_total
+    breakev = signals_breakeven
+    acc   = (hits / total * 100) if total > 0 else 0.0
+    send_message(f"📊 Daily Summary\nSignals Sent: {total}\nSignals Checked: {total_checked_signals}\nSignals Skipped: {skipped_signals}\n✅ Hits: {hits}\n⚖️ Breakeven: {breakev}\n❌ Fails: {fails}\n🎯 Accuracy: {acc:.1f}%")
+    print(f"📊 Daily Summary. Accuracy: {acc:.1f}%")
+    print("Stats by side:", STATS["by_side"])
+    print("Stats by TF:", STATS["by_tf"])
+
+# ===== STARTUP =====
+init_csv()
+send_message("✅ SIRTS v9 Top 100 deployed — scalp signals 100% CONF active.")
+print("✅ SIRTS v9 Top100 deployed.")
+
+try:
+    SYMBOLS = get_top_symbols(100)
+    print(f"Monitoring {len(SYMBOLS)} symbols (Top 100).")
+except Exception as e:
+    SYMBOLS = ["BTCUSDT","ETHUSDT"]
+    print("Warning retrieving top symbols, defaulting to BTCUSDT & ETHUSDT.")
+
+# ===== MAIN LOOP =====
+while True:
+    try:
+        if btc_volatility_spike():
+            volatility_pause_until = time.time() + VOLATILITY_PAUSE
+            send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
+            print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
+
+        for i, sym in enumerate(SYMBOLS, start=1):
+            print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} …")
+            analyze_symbol(sym)
+            time.sleep(0.3)
+
+        check_trades()
+
+        now = time.time()
+        if now - last_heartbeat > 43200:  # 12 hours
+            heartbeat()
+            last_heartbeat = now
+        if now - last_summary > 86400:  # 24 hours
+            summary()
+            last_summary = now
+
+        print("Cycle completed at", datetime.utcnow().strftime("%H:%M:%S UTC"))
+        time.sleep(CHECK_INTERVAL)
+    except Exception as e:
+        print("Main loop error:", e)
+        time.sleep(5)
