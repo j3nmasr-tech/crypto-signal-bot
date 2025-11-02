@@ -28,8 +28,8 @@ WEIGHT_TURTLE = 0.25
 WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
-MIN_TF_SCORE  = 50               # per‐TF threshold
-CONF_MIN_TFS  = len(TIMEFRAMES) # require 100% confirmation
+MIN_TF_SCORE  = 55               # per‐TF threshold (sweet spot for balance)
+CONF_MIN_TFS  = 3                # require 3 out of 4 timeframes to agree
 MIN_QUOTE_VOLUME = 1_000_000.0
 
 BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
