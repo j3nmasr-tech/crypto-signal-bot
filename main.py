@@ -147,12 +147,39 @@ def smc_bias(df):
     e50 = df["close"].ewm(span=50).mean().iloc[-1]
     return "bull" if e20 > e50 else "bear"
 
+# ---- improved volume_ok: require 30% above 20-period rolling average
 def volume_ok(df):
     ma = df["volume"].rolling(20).mean().iloc[-1]
     if np.isnan(ma):
         return True
-    return df["volume"].iloc[-1] > ma * 1.2
-    # ===== ATR & POSITION SIZING =====
+    current = df["volume"].iloc[-1]
+    return current > ma * 1.3  # require 30% higher than average
+
+# ===== DOUBLE TIMEFRAME CONFIRMATION =====
+def get_direction_from_ma(df, span=20):
+    """Return 'BUY' if price above EMA(span) else 'SELL'."""
+    try:
+        ma = df["close"].ewm(span=span).mean().iloc[-1]
+        return "BUY" if df["close"].iloc[-1] > ma else "SELL"
+    except Exception:
+        return None
+
+def tf_agree(symbol, tf_low, tf_high):
+    """
+    Return True only if the direction on tf_low and tf_high are the same (BUY/SELL).
+    If data is missing or insufficient, return True as a fail-safe (do not block).
+    """
+    df_low = get_klines(symbol, tf_low, 100)
+    df_high = get_klines(symbol, tf_high, 100)
+    if df_low is None or df_high is None or len(df_low) < 30 or len(df_high) < 30:
+        return True  # fail-safe: don't block when data missing
+    dir_low = get_direction_from_ma(df_low)
+    dir_high = get_direction_from_ma(df_high)
+    if dir_low is None or dir_high is None:
+        return True
+    return dir_low == dir_high
+
+# ===== ATR & POSITION SIZING =====
 def get_atr(symbol, period=14):
     df = get_klines(symbol, "1h", period+1)
     if df is None or len(df) < period+1:
@@ -277,6 +304,16 @@ def analyze_symbol(symbol):
         if df is None or len(df) < 60:
             breakdown_per_tf[tf] = None
             continue
+
+        # --- Double timeframe confirmation logic (check tf agrees with next higher TF) ---
+        tf_index = TIMEFRAMES.index(tf)
+        if tf_index < len(TIMEFRAMES) - 1:
+            higher_tf = TIMEFRAMES[tf_index + 1]
+            if not tf_agree(symbol, tf, higher_tf):
+                print(f"⏸ {symbol} {tf} disagrees with {higher_tf} — skipping TF confirmation.")
+                breakdown_per_tf[tf] = {"skipped_due_tf_disagree": True}
+                continue
+
         crt_b, crt_s = detect_crt(df)
         ts_b, ts_s = detect_turtle(df)
         bias        = smc_bias(df)
@@ -313,7 +350,7 @@ def analyze_symbol(symbol):
             chosen_tf    = tf
             confirming_tfs.append(tf)
 
-    print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations.")
+    print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations. Breakdown: {breakdown_per_tf}")
 
     if tf_confirmations >= CONF_MIN_TFS and chosen_dir and chosen_entry is not None:
         confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
@@ -383,12 +420,13 @@ def analyze_symbol(symbol):
         log_signal([
             datetime.utcnow().isoformat(), symbol, chosen_dir, entry,
             tp1, tp2, tp3, sl, chosen_tf, units, margin, exposure,
-            risk_used*100, confidence_pct, "open", ""
+            risk_used*100, confidence_pct, "open", str(breakdown_per_tf)
         ])
         print(f"✅ Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
         return True
     return False
-    # ===== TRADE CHECK (TP/SL/BREAKEVEN) =====
+
+# ===== TRADE CHECK (TP/SL/BREAKEVEN) =====
 def check_trades():
     global signals_hit_total, signals_fail_total, signals_breakeven, STATS
     for t in list(open_trades):
