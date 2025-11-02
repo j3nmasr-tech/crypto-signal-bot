@@ -319,7 +319,7 @@ def analyze_symbol(symbol):
         confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
         confidence_pct = max(0.0, min(100.0, confidence_pct))
 
-        if confidence_pct < 55.0:
+        if confidence_pct < 60:
             print(f"Skipping {symbol}: confidence too low ({confidence_pct:.1f}%).")
             return False
 
