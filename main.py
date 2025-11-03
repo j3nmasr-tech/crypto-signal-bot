@@ -463,13 +463,21 @@ def analyze_symbol(symbol):
     print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations. Breakdown: {breakdown_per_tf}")
 
     if tf_confirmations >= CONF_MIN_TFS and chosen_dir and chosen_entry is not None:
-        confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
-        confidence_pct = max(0.0, min(100.0, confidence_pct))
+    confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
+    confidence_pct = max(0.0, min(100.0, confidence_pct))
 
-        if confidence_pct < CONFIDENCE_MIN:
-            print(f"Skipping {symbol}: confidence too low ({confidence_pct:.1f}%).")
-            skipped_signals += 1
-            return False
+    # --- Aggressive Mode Safety Check ---
+    # Ensures the signal still meets minimum quality standards
+    if confidence_pct < 66 or tf_confirmations < 2:
+        print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
+        skipped_signals += 1
+        return False
+    # -------------------------------------
+
+    if confidence_pct < CONFIDENCE_MIN:
+        print(f"Skipping {symbol}: confidence too low ({confidence_pct:.1f}%).")
+        skipped_signals += 1
+        return False
 
         # global open-trade / exposure limits
         if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
