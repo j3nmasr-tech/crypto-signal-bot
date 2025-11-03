@@ -43,11 +43,10 @@ CONFIDENCE_MIN = 68.0
 MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
 
-BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
-BINANCE_PRICE  = "https://api.binance.com/api/v3/ticker/price"
-BINANCE_24H    = "https://api.binance.com/api/v3/ticker/24hr"
+BINANCE_KLINES = "https://api.binance.us/api/v3/klines"
+BINANCE_PRICE  = "https://api.binance.us/api/v3/ticker/price"
+BINANCE_24H    = "https://api.binance.us/api/v3/ticker/24hr"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
-
 LOG_CSV = "./sirts_v10_signals.csv"
 
 STRICT_TF_AGREE = True
