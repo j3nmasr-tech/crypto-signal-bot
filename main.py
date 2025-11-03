@@ -29,7 +29,7 @@ VOLATILITY_PAUSE = 1800           # seconds (30 minutes)
 CHECK_INTERVAL = 60               # seconds between full scans
 
 # small delay between per-symbol API calls to reduce rate-limit risk
-API_CALL_DELAY = 0.2  # seconds
+API_CALL_DELAY = 0.05  # seconds (reduced for Top 80; increase if you hit rate limits)
 
 # TIMEFRAMES and weights preserved but MIN_TF_SCORE tightened
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
@@ -103,15 +103,29 @@ def send_message(text):
         print("Telegram send error:", e)
         return False
 
-def safe_get_json(url, params=None, timeout=8):
-    try:
-        r = requests.get(url, params=params, timeout=timeout)
-        return r.json()
-    except Exception:
-        return None
+def safe_get_json(url, params=None, timeout=3, retries=1):
+    """
+    Robust helper to fetch JSON with a short timeout and light retry.
+    Returns parsed JSON or None on failure. Logs errors for visibility.
+    """
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ API request error ({e}) for {url} params={params} attempt={attempt+1}/{retries+1}")
+            # small backoff between retries
+            if attempt < retries:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            return None
+        except Exception as e:
+            print(f"⚠️ Unexpected error fetching {url}: {e}")
+            return None
 
 def get_top_symbols(n=TOP_SYMBOLS):
-    data = safe_get_json(BINANCE_24H, {})
+    data = safe_get_json(BINANCE_24H, {}, timeout=3, retries=1)
     if not data:
         return ["BTCUSDT","ETHUSDT"]
     usdt = [d for d in data if d.get("symbol","").endswith("USDT")]
@@ -119,14 +133,14 @@ def get_top_symbols(n=TOP_SYMBOLS):
     return [d["symbol"] for d in usdt[:n]]
 
 def get_24h_quote_volume(symbol):
-    j = safe_get_json(BINANCE_24H, {"symbol": symbol})
+    j = safe_get_json(BINANCE_24H, {"symbol": symbol}, timeout=3, retries=1)
     try:
-        return float(j.get("quoteVolume", 0))
-    except:
+        return float(j.get("quoteVolume", 0)) if j else 0.0
+    except Exception:
         return 0.0
 
 def get_klines(symbol, interval="15m", limit=200):
-    data = safe_get_json(BINANCE_KLINES, {"symbol":symbol,"interval":interval,"limit":limit})
+    data = safe_get_json(BINANCE_KLINES, {"symbol":symbol,"interval":interval,"limit":limit}, timeout=3, retries=1)
     if not isinstance(data, list):
         return None
     df = pd.DataFrame(data, columns=["t","o","h","l","c","v","ct","qv","tr","tb","tq","ig"])
@@ -134,14 +148,15 @@ def get_klines(symbol, interval="15m", limit=200):
         df = df[["o","h","l","c","v"]].astype(float)
         df.columns = ["open","high","low","close","volume"]
         return df
-    except Exception:
+    except Exception as e:
+        print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
         return None
 
 def get_price(symbol):
-    j = safe_get_json(BINANCE_PRICE, {"symbol":symbol})
+    j = safe_get_json(BINANCE_PRICE, {"symbol":symbol}, timeout=3, retries=1)
     try:
-        return float(j.get("price"))
-    except:
+        return float(j.get("price")) if j else None
+    except Exception:
         return None
 
 # ===== INDICATORS =====
@@ -270,7 +285,7 @@ def pos_size_units(entry, sl, confidence_pct):
 
 # ===== SENTIMENT =====
 def get_fear_greed_value():
-    j = safe_get_json(FNG_API, {})
+    j = safe_get_json(FNG_API, {}, timeout=3, retries=1)
     try:
         return int(j["data"][0]["value"])
     except:
@@ -677,7 +692,10 @@ while True:
 
         for i, sym in enumerate(SYMBOLS, start=1):
             print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} …")
-            analyze_symbol(sym)
+            try:
+                analyze_symbol(sym)
+            except Exception as e:
+                print(f"⚠️ Error scanning {sym}: {e}")
             time.sleep(API_CALL_DELAY)
 
         check_trades()
