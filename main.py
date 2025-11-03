@@ -37,7 +37,7 @@ WEIGHT_VOLUME = 0.15
 
 MIN_TF_SCORE  = 60               # per‐TF threshold (raised)
 CONF_MIN_TFS  = 3                # require 3 out of 4 timeframes to agree
-CONFIDENCE_MIN = 72.0            # require overall confidence >= 72%
+CONFIDENCE_MIN = 68.0            # require overall confidence >= 72%
 
 MIN_QUOTE_VOLUME = 1_000_000.0
 
