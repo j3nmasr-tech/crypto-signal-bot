@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SIRTS v10 – Top 40 | Improved signal hygiene, safety, dedupe, and exposure caps
+# SIRTS v10 – Top 80 | Improved signal hygiene, safety, dedupe, and exposure caps
 # Keep indicators (CRT + Turtle + Bias + Volume) but fix bugs and add robust filters.
 # Requirements: requests, pandas, numpy, pytz
 # BOT_TOKEN and CHAT_ID must be set as environment variables: “BOT_TOKEN”, “CHAT_ID”
@@ -16,7 +16,7 @@ import csv
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 
-CAPITAL = 50.0
+CAPITAL = 80.0
 LEVERAGE = 30
 # base cooldown used as fallback (seconds)
 COOLDOWN_TIME_DEFAULT = 1800
@@ -27,6 +27,9 @@ COOLDOWN_TIME_FAIL    = 45 * 60   # 45 min after a loss
 VOLATILITY_THRESHOLD_PCT = 2.5   # % move for BTC to trigger pause
 VOLATILITY_PAUSE = 1800           # seconds (30 minutes)
 CHECK_INTERVAL = 60               # seconds between full scans
+
+# small delay between per-symbol API calls to reduce rate-limit risk
+API_CALL_DELAY = 0.2  # seconds
 
 # TIMEFRAMES and weights preserved but MIN_TF_SCORE tightened
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
@@ -42,7 +45,7 @@ CONFIDENCE_MIN = 68.0            # require overall confidence >= 72%
 MIN_QUOTE_VOLUME = 1_000_000.0
 
 # Limit universe to top N by quoteVolume to avoid extremely illiquid names
-TOP_SYMBOLS = 40
+TOP_SYMBOLS = 80
 
 BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
 BINANCE_PRICE  = "https://api.binance.com/api/v3/ticker/price"
@@ -654,8 +657,8 @@ def summary():
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 Top 40 deployed — improved signal hygiene active.")
-print("✅ SIRTS v10 Top40 deployed.")
+send_message("✅ SIRTS v10 Top 80 deployed — improved signal hygiene active.")
+print("✅ SIRTS v10 Top80 deployed.")
 
 try:
     SYMBOLS = get_top_symbols(TOP_SYMBOLS)
@@ -675,7 +678,7 @@ while True:
         for i, sym in enumerate(SYMBOLS, start=1):
             print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} …")
             analyze_symbol(sym)
-            time.sleep(0.3)
+            time.sleep(API_CALL_DELAY)
 
         check_trades()
 
