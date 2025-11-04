@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SIRTS v10 – Top 80 | Binance.US + symbol sanitization + Aggressive Mode defaults
+# SIRTS v11 – Top 80 | Binance.US + symbol sanitization + Aggressive Mode + Smart Filters
 # Requirements: requests, pandas, numpy
 # BOT_TOKEN and CHAT_ID must be set as environment variables: "BOT_TOKEN", "CHAT_ID"
 
@@ -57,7 +57,7 @@ BINANCE_PRICE  = "https://api.binance.us/api/v3/ticker/price"
 BINANCE_24H    = "https://api.binance.us/api/v3/ticker/24hr"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
 
-LOG_CSV = "./sirts_v10_signals.csv"
+LOG_CSV = "./sirts_v11_signals.csv"
 
 # ===== NEW SAFEGUARDS =====
 STRICT_TF_AGREE = False         # aggressive mode: allow missing TFs to not block
@@ -68,6 +68,10 @@ MIN_SL_DISTANCE_PCT = 0.0015
 SYMBOL_BLACKLIST = set([])
 RECENT_SIGNAL_SIGNATURE_EXPIRE = 300
 recent_signals = {}
+
+# directional cooldown (per symbol+direction)
+DIRECTIONAL_COOLDOWN_SEC = 3600
+last_directional_trade = {}
 
 # ===== RISK & CONFIDENCE =====
 BASE_RISK = 0.02
@@ -201,12 +205,18 @@ def smc_bias(df):
     e50 = df["close"].ewm(span=50).mean().iloc[-1]
     return "bull" if e20 > e50 else "bear"
 
-def volume_ok(df):
+# volume_ok updated to require two consecutive above-ma candles for "consistent" strength
+def volume_ok(df, required_consecutive=1):
     ma = df["volume"].rolling(20, min_periods=8).mean().iloc[-1]
     if np.isnan(ma):
         return True
-    current = df["volume"].iloc[-1]
-    return current > ma * 1.3
+    # if required_consecutive==1 behave like before (single bar)
+    if required_consecutive <= 1 or len(df) < required_consecutive + 1:
+        current = df["volume"].iloc[-1]
+        return current > ma * 1.3
+    # require last N consecutive candles > ma*1.3
+    last_vols = df["volume"].iloc[-required_consecutive:].values
+    return all(v > ma * 1.3 for v in last_vols)
 
 # ===== DOUBLE TIMEFRAME CONFIRMATION =====
 def get_direction_from_ma(df, span=20):
@@ -351,12 +361,36 @@ def log_trade_close(trade):
     except Exception as e:
         print("log_trade_close error:", e)
 
+# ===== NEW UTILITIES for Smart Filters =====
+def bias_recent_flip(symbol, tf, desired_direction, lookback_candles=3):
+    """
+    Return True if the bias on `tf` flipped into desired_direction within lookback_candles.
+    We compute the current bias and the bias before `lookback_candles` candles and compare.
+    """
+    df = get_klines(symbol, tf, limit=lookback_candles + 120)
+    if df is None or len(df) < lookback_candles + 10:
+        return False
+    try:
+        current_bias = smc_bias(df)
+        # bias some candles ago -> use df excluding last lookback_candles
+        prior_df = df.iloc[:-lookback_candles]
+        prior_bias = smc_bias(prior_df) if len(prior_df) >= 60 else None
+        return current_bias == desired_direction and prior_bias is not None and prior_bias != desired_direction
+    except Exception:
+        return False
+
+def get_btc_30m_bias():
+    df = get_klines("BTCUSDT", "30m", limit=200)
+    if df is None or len(df) < 60:
+        return None
+    return smc_bias(df)
+
 # ===== ANALYSIS & SIGNAL GENERATION =====
 def current_total_exposure():
     return sum([t.get("exposure", 0) for t in open_trades if t.get("st") == "open"])
 
 def analyze_symbol(symbol):
-    global total_checked_signals, skipped_signals, signals_sent_total, last_trade_time, volatility_pause_until, STATS, recent_signals
+    global total_checked_signals, skipped_signals, signals_sent_total, last_trade_time, volatility_pause_until, STATS, recent_signals, last_directional_trade
     total_checked_signals += 1
     now = time.time()
     if time.time() < volatility_pause_until:
@@ -402,9 +436,10 @@ def analyze_symbol(symbol):
                 continue
 
         crt_b, crt_s = detect_crt(df)
+        # require 2 consecutive volume candles for volume_ok check (less false spikes)
         ts_b, ts_s = detect_turtle(df)
         bias        = smc_bias(df)
-        vol_ok      = volume_ok(df)
+        vol_ok      = volume_ok(df, required_consecutive=2)
 
         bull_score = (WEIGHT_CRT*(1 if crt_b else 0) + WEIGHT_TURTLE*(1 if ts_b else 0) +
                       WEIGHT_VOLUME*(1 if vol_ok else 0) + WEIGHT_BIAS*(1 if bias=="bull" else 0))*100
@@ -448,7 +483,6 @@ def analyze_symbol(symbol):
     confidence_pct = max(0.0, min(100.0, confidence_pct))
 
     # --- Aggressive Mode Safety Check (small fallback to avoid junk signals) ---
-    # Ensure minimum absolute thresholds even in aggressive mode
     if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
         print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
         skipped_signals += 1
@@ -469,10 +503,59 @@ def analyze_symbol(symbol):
         return False
     recent_signals[sig] = time.time()
 
+    # directional per-symbol cooldown: avoid stacking same-direction rapid entries
+    dir_key = (symbol, chosen_dir)
+    if last_directional_trade.get(dir_key, 0) + DIRECTIONAL_COOLDOWN_SEC > time.time():
+        print(f"Skipping {symbol}: directional cooldown active for {chosen_dir}.")
+        skipped_signals += 1
+        return False
+
     sentiment = sentiment_label()
 
     entry = get_price(symbol)
     if entry is None:
+        skipped_signals += 1
+        return False
+
+    # ----- BTC correlation filter -----
+    btc30_bias = get_btc_30m_bias()
+    if btc30_bias is not None:
+        if chosen_dir == "BUY" and btc30_bias == "bear":
+            print(f"Skipping {symbol}: BTC 30m bias is bear; skipping counter-BTC BUY.")
+            skipped_signals += 1
+            return False
+        if chosen_dir == "SELL" and btc30_bias == "bull":
+            print(f"Skipping {symbol}: BTC 30m bias is bull; skipping counter-BTC SELL.")
+            skipped_signals += 1
+            return False
+
+    # ----- Dual bias flip rule for reversal trades -----
+    # identify higher timeframe bias for the chosen_tf (try 30m if chosen_tf is 15m)
+    try:
+        higher_tf = "30m" if chosen_tf == "15m" else ("1h" if chosen_tf == "30m" else "4h")
+    except Exception:
+        higher_tf = "30m"
+    # get bias on higher tf
+    df_high = get_klines(symbol, higher_tf, limit=120)
+    bias_high = smc_bias(df_high) if df_high is not None and len(df_high) >= 60 else None
+    # if trade is a reversal (chosen_dir disagrees with higher-tf bias) require both 15m & 30m to have flipped recently
+    if bias_high is not None:
+        is_reversal = (chosen_dir == "BUY" and bias_high == "bear") or (chosen_dir == "SELL" and bias_high == "bull")
+        if is_reversal:
+            flip_15 = bias_recent_flip(symbol, "15m", "bull" if chosen_dir=="BUY" else "bear", lookback_candles=3)
+            flip_30 = bias_recent_flip(symbol, "30m", "bull" if chosen_dir=="BUY" else "bear", lookback_candles=3)
+            if not (flip_15 and flip_30):
+                print(f"Skipping {symbol}: reversal detected but dual bias flip missing (15m:{flip_15},30m:{flip_30}).")
+                skipped_signals += 1
+                return False
+
+    # ----- volume consistency check on chosen timeframe (require last 2 candles above MA*1.3) -----
+    df_chosen = get_klines(symbol, chosen_tf, limit=80)
+    if df_chosen is None or len(df_chosen) < 10:
+        skipped_signals += 1
+        return False
+    if not volume_ok(df_chosen, required_consecutive=2):
+        print(f"Skipping {symbol}: volume consistency failed on {chosen_tf}.")
         skipped_signals += 1
         return False
 
@@ -503,6 +586,9 @@ def analyze_symbol(symbol):
               f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}")
 
     send_message(header)
+
+    # record directional cooldown timestamp
+    last_directional_trade[dir_key] = time.time()
 
     trade_obj = {
         "s": symbol,
@@ -675,8 +761,8 @@ def summary():
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 Top80 (Binance.US, Aggressive) deployed — sanitization + aggressive defaults active.")
-print("✅ SIRTS v10 Top80 deployed.")
+send_message("✅ SIRTS v11 Top80 (Binance.US, Aggressive + Smart Filters) deployed — sanitization + aggressive defaults active.")
+print("✅ SIRTS v11 Top80 deployed.")
 
 try:
     SYMBOLS = get_top_symbols(TOP_SYMBOLS)
