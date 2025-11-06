@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# SIRTS v11 – Top 80 | Binance.US + symbol sanitization + Aggressive Mode + Smart Filters
+# SIRTS v11 – Top 80 | BYBIT (USDT Perpetual: data-only) + symbol sanitization + Aggressive Mode + Smart Filters
 # Ready-to-run modified: Hybrid Mode, Majors priority (Option B), CONFIDENCE_MIN=55
+# NOTE: Only network/data functions changed (Binance → Bybit linear). All logic unchanged.
 
 import os
 import re
@@ -11,13 +12,12 @@ import numpy as np
 from datetime import datetime
 import csv
 
-# ===== SYMBOL SANITIZATION =====
+# ===== SYMBOL SANITIZATION (BYBIT) =====
 def sanitize_symbol(symbol: str) -> str:
-    """Ensure symbol only contains legal Binance characters and is upper-case.
-       Binance legal range: '^[A-Z0-9-_.]{1,20}$'."""
+    """Ensure symbol is compatible with Bybit (uppercase, no dots or dashes)."""
     if not symbol or not isinstance(symbol, str):
         return ""
-    s = re.sub(r"[^A-Z0-9_.-]", "", symbol.upper())
+    s = re.sub(r"[^A-Z0-9_]", "", symbol.upper())
     return s[:20]
 
 # ===== CONFIG =====
@@ -50,10 +50,10 @@ CONFIDENCE_MIN = 55.0   # lowered from 60 -> 55 per your request
 MIN_QUOTE_VOLUME = 500_000.0
 TOP_SYMBOLS = 80
 
-# ===== BINANCE MIDDLE EAST ENDPOINTS (Works in Egypt) =====
-BINANCE_KLINES = "https://api.binance.me/api/v3/klines"
-BINANCE_PRICE  = "https://api.binance.me/api/v3/ticker/price"
-BINANCE_24H    = "https://api.binance.me/api/v3/ticker/24hr"
+# ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
+BINANCE_KLINES = "https://api.bybit.com/v5/market/kline"
+BINANCE_PRICE  = "https://api.bybit.com/v5/market/tickers"
+BINANCE_24H    = "https://api.bybit.com/v5/market/tickers"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
 
 LOG_CSV = "./sirts_v11_signals.csv"
@@ -134,47 +134,130 @@ def safe_get_json(url, params=None, timeout=3, retries=1):
             print(f"⚠️ Unexpected error fetching {url}: {e}")
             return None
 
+# ===== REPLACED: Top symbols (Bybit linear) =====
 def get_top_symbols(n=TOP_SYMBOLS):
-    data = safe_get_json(BINANCE_24H, {}, timeout=3, retries=1)
-    if not data:
+    data = safe_get_json(BINANCE_24H, {"category":"linear"}, timeout=3, retries=1)
+    if not data or "result" not in data or "list" not in data["result"]:
         return ["BTCUSDT","ETHUSDT"]
-    usdt = [d for d in data if d.get("symbol","").endswith("USDT")]
-    usdt.sort(key=lambda x: float(x.get("quoteVolume",0) or 0), reverse=True)
+    lst = data["result"]["list"]
+    # some endpoints may use turnover24h or turnover; be robust
+    usdt = [d for d in lst if isinstance(d.get("symbol", ""), str) and d["symbol"].endswith("USDT")]
+    usdt.sort(key=lambda x: float(x.get("turnover24h", x.get("turnover", 0) or 0)), reverse=True)
     return [sanitize_symbol(d["symbol"]) for d in usdt[:n]]
 
+# ===== REPLACED: 24h quote volume (Bybit linear) =====
 def get_24h_quote_volume(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return 0.0
-    j = safe_get_json(BINANCE_24H, {"symbol": symbol}, timeout=3, retries=1)
+    j = safe_get_json(BINANCE_24H, {"category":"linear", "symbol": symbol}, timeout=3, retries=1)
     try:
-        return float(j.get("quoteVolume", 0)) if j else 0.0
+        if not j or "result" not in j or "list" not in j["result"] or len(j["result"]["list"]) == 0:
+            return 0.0
+        d = j["result"]["list"][0]
+        # Bybit uses turnover24h as USD turnover; fallback to other keys
+        return float(d.get("turnover24h", d.get("turnover", d.get("quoteVolume", 0)) or 0))
     except Exception:
         return 0.0
 
+# ===== REPLACED: get_klines (Bybit linear) =====
 def get_klines(symbol, interval="15m", limit=200):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
-    data = safe_get_json(BINANCE_KLINES, {"symbol":symbol,"interval":interval,"limit":limit}, timeout=3, retries=1)
-    if not isinstance(data, list):
+
+    # Map Binance-like intervals to Bybit interval values
+    tf_map = {
+        "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+        "1h": "60", "2h": "120", "4h": "240", "6h": "360",
+        "12h": "720", "1d": "D"
+    }
+
+    params = {"category":"linear", "symbol": symbol, "interval": tf_map.get(interval, "15"), "limit": limit}
+    data = safe_get_json(BINANCE_KLINES, params=params, timeout=3, retries=1)
+    if not data or "result" not in data or "list" not in data["result"]:
         return None
-    df = pd.DataFrame(data, columns=["t","o","h","l","c","v","ct","qv","tr","tb","tq","ig"])
+
+    kl = data["result"]["list"]
+
+    # Bybit returns either list-of-lists or list-of-dicts depending on endpoint version;
+    # handle both. Each list entry typically: [start, open, high, low, close, volume, turnover]
     try:
-        df = df[["o","h","l","c","v"]].astype(float)
+        if len(kl) == 0:
+            return None
+
+        # If it's list-of-lists:
+        if isinstance(kl[0], (list, tuple)):
+            # keep only first 6 or 7 entries if present
+            rows = []
+            for row in kl:
+                # normalize length
+                if len(row) >= 6:
+                    rows.append(row[:6])
+            df = pd.DataFrame(rows, columns=["t","o","h","l","c","v"])
+        elif isinstance(kl[0], dict):
+            # some variants may be dicts with keys like 'start','open','high','low','close','volume'
+            rows = []
+            for d in kl:
+                # prefer common keys, fallback safely
+                t = d.get("start", d.get("t", d.get("open_time", None)))
+                o = d.get("open", d.get("o"))
+                h = d.get("high", d.get("h"))
+                l = d.get("low", d.get("l"))
+                c = d.get("close", d.get("c"))
+                v = d.get("volume", d.get("v"))
+                if o is None or h is None or l is None or c is None or v is None:
+                    continue
+                rows.append([t, o, h, l, c, v])
+            df = pd.DataFrame(rows, columns=["t","o","h","l","c","v"])
+        else:
+            return None
+
+        # ensure numeric and consistent column names like your original function
+        df[["o","h","l","c","v"]] = df[["o","h","l","c","v"]].astype(float)
+        df = df[["o","h","l","c","v"]]
         df.columns = ["open","high","low","close","volume"]
+
+        # Ensure chronological order (oldest first)
+        try:
+            # if t available, check ordering
+            # note: for dicts we may not have robust t; the DataFrame index order is preserved from API
+            # We'll attempt to detect descending order and reverse if necessary by comparing first two close timestamps/values
+            if len(df) >= 2:
+                # No strong timestamp available in df columns, so we rely on Bybit kl list order heuristics:
+                # If last candle time seems smaller than first (descending), reverse
+                # We check original kl list timestamps if available
+                first_ts = None
+                last_ts = None
+                # attempt to extract timestamps from kl
+                if isinstance(kl[0], (list, tuple)) and len(kl[0]) >= 1:
+                    first_ts = float(kl[0][0])
+                    last_ts = float(kl[-1][0])
+                elif isinstance(kl[0], dict):
+                    first_ts = float(kl[0].get("start", kl[0].get("t", 0) or 0))
+                    last_ts = float(kl[-1].get("start", kl[-1].get("t", 0) or 0))
+                if first_ts and last_ts and first_ts > last_ts:
+                    df = df.iloc[::-1].reset_index(drop=True)
+        except Exception:
+            pass
+
         return df
     except Exception as e:
         print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
         return None
 
+# ===== REPLACED: get_price (Bybit linear) =====
 def get_price(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
-    j = safe_get_json(BINANCE_PRICE, {"symbol":symbol}, timeout=3, retries=1)
+    j = safe_get_json(BINANCE_PRICE, {"category": "linear", "symbol": symbol}, timeout=3, retries=1)
     try:
-        return float(j.get("price")) if j else None
+        if not j or "result" not in j or "list" not in j["result"] or len(j["result"]["list"]) == 0:
+            return None
+        d = j["result"]["list"][0]
+        # lastPrice might be named lastPrice; fallback to last_tick or last
+        return float(d.get("lastPrice", d.get("last", d.get("last_price", None))))
     except Exception:
         return None
 
@@ -803,7 +886,7 @@ def summary():
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v11 Top80 (Binance.US) deployed — Hybrid Mode active: MAJORS priority (Option B). CONF_MIN=55.")
+send_message("✅ SIRTS v11 Top80 (Bybit USDT Perpetual data) deployed — Hybrid Mode active: MAJORS priority (Option B). CONF_MIN=55.")
 print("✅ SIRTS v11 Top80 deployed (Hybrid Mode active).")
 
 try:
