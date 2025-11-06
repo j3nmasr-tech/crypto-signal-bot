@@ -50,10 +50,10 @@ CONFIDENCE_MIN = 55.0   # lowered from 60 -> 55 per your request
 MIN_QUOTE_VOLUME = 500_000.0
 TOP_SYMBOLS = 80
 
-# ===== BINANCE GLOBAL ENDPOINTS =====
-BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
-BINANCE_PRICE  = "https://api.binance.com/api/v3/ticker/price"
-BINANCE_24H    = "https://api.binance.com/api/v3/ticker/24hr"
+# ===== BINANCE MIDDLE EAST ENDPOINTS (Works in Egypt) =====
+BINANCE_KLINES = "https://api.binance.me/api/v3/klines"
+BINANCE_PRICE  = "https://api.binance.me/api/v3/ticker/price"
+BINANCE_24H    = "https://api.binance.me/api/v3/ticker/24hr"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
 
 LOG_CSV = "./sirts_v11_signals.csv"
