@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # SIRTS v11 – Top 80 | Binance.US + symbol sanitization + Aggressive Mode + Smart Filters
-# Requirements: requests, pandas, numpy
-# BOT_TOKEN and CHAT_ID must be set as environment variables: "BOT_TOKEN", "CHAT_ID"
+# Ready-to-run modified: Hybrid Mode, Majors priority (Option B), CONFIDENCE_MIN=55
 
 import os
 import re
@@ -46,12 +45,12 @@ WEIGHT_VOLUME = 0.15
 # ===== Aggressive-mode defaults (confirmed) =====
 MIN_TF_SCORE  = 55      # per-TF threshold
 CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
-CONFIDENCE_MIN = 60.0   # overall minimum confidence %
+CONFIDENCE_MIN = 55.0   # lowered from 60 -> 55 per your request
 
 MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
 
-# ===== BINANCE .US ENDPOINTS (per your request) =====
+# ===== BINANCE .US ENDPOINTS =====
 BINANCE_KLINES = "https://api.binance.us/api/v3/klines"
 BINANCE_PRICE  = "https://api.binance.us/api/v3/ticker/price"
 BINANCE_24H    = "https://api.binance.us/api/v3/ticker/24hr"
@@ -60,7 +59,7 @@ FNG_API        = "https://api.alternative.me/fng/?limit=1"
 LOG_CSV = "./sirts_v11_signals.csv"
 
 # ===== NEW SAFEGUARDS =====
-STRICT_TF_AGREE = False         # aggressive mode: allow missing TFs to not block
+STRICT_TF_AGREE = False
 MAX_OPEN_TRADES = 6
 MAX_EXPOSURE_PCT = 0.20
 MIN_MARGIN_USD = 0.25
@@ -97,6 +96,14 @@ STATS = {
                 "SELL":{"sent":0,"hit":0,"fail":0,"breakeven":0}},
     "by_tf": {tf: {"sent":0,"hit":0,"fail":0,"breakeven":0} for tf in TIMEFRAMES}
 }
+
+# ===== Major coins (Option B) and volatile-lock override =====
+MAJOR_COINS = {
+    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT",
+    "XRPUSDT","ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","DOTUSDT"
+}
+# Keep a short list of coins we want the strict 4H-lock for regardless (avoid past losers)
+VOLATILE_LOCK = {"XRPUSDT","ZECUSDT","DASHUSDT"}  # you can edit this set
 
 # ===== HELPERS =====
 def send_message(text):
@@ -205,16 +212,13 @@ def smc_bias(df):
     e50 = df["close"].ewm(span=50).mean().iloc[-1]
     return "bull" if e20 > e50 else "bear"
 
-# volume_ok updated to require two consecutive above-ma candles for "consistent" strength
 def volume_ok(df, required_consecutive=1):
     ma = df["volume"].rolling(20, min_periods=8).mean().iloc[-1]
     if np.isnan(ma):
         return True
-    # if required_consecutive==1 behave like before (single bar)
     if required_consecutive <= 1 or len(df) < required_consecutive + 1:
         current = df["volume"].iloc[-1]
         return current > ma * 1.3
-    # require last N consecutive candles > ma*1.3
     last_vols = df["volume"].iloc[-required_consecutive:].values
     return all(v > ma * 1.3 for v in last_vols)
 
@@ -236,6 +240,25 @@ def tf_agree(symbol, tf_low, tf_high):
     if dir_low is None or dir_high is None:
         return not STRICT_TF_AGREE
     return dir_low == dir_high
+
+# ===== 4H TREND LOCK (Mode B) =====
+def get_4h_trend(symbol):
+    """
+    Return 'bull' if last 4h close > 4h EMA200,
+           'bear' if last 4h close < 4h EMA200,
+           None if insufficient data.
+    """
+    df4 = get_klines(symbol, "4h", limit=250)
+    if df4 is None or len(df4) < 220:
+        return None
+    try:
+        ema200 = df4["close"].ewm(span=200).mean().iloc[-1]
+        last_close = float(df4["close"].iloc[-1])
+        if np.isnan(ema200):
+            return None
+        return "bull" if last_close > ema200 else "bear"
+    except Exception:
+        return None
 
 # ===== ATR & POSITION SIZING =====
 def get_atr(symbol, period=14):
@@ -363,16 +386,11 @@ def log_trade_close(trade):
 
 # ===== NEW UTILITIES for Smart Filters =====
 def bias_recent_flip(symbol, tf, desired_direction, lookback_candles=3):
-    """
-    Return True if the bias on `tf` flipped into desired_direction within lookback_candles.
-    We compute the current bias and the bias before `lookback_candles` candles and compare.
-    """
     df = get_klines(symbol, tf, limit=lookback_candles + 120)
     if df is None or len(df) < lookback_candles + 10:
         return False
     try:
         current_bias = smc_bias(df)
-        # bias some candles ago -> use df excluding last lookback_candles
         prior_df = df.iloc[:-lookback_candles]
         prior_bias = smc_bias(prior_df) if len(prior_df) >= 60 else None
         return current_bias == desired_direction and prior_bias is not None and prior_bias != desired_direction
@@ -436,7 +454,6 @@ def analyze_symbol(symbol):
                 continue
 
         crt_b, crt_s = detect_crt(df)
-        # require 2 consecutive volume candles for volume_ok check (less false spikes)
         ts_b, ts_s = detect_turtle(df)
         bias        = smc_bias(df)
         vol_ok      = volume_ok(df, required_consecutive=2)
@@ -474,7 +491,7 @@ def analyze_symbol(symbol):
 
     print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations. Breakdown: {breakdown_per_tf}")
 
-    # require at least CONF_MIN_TFS confirmations (aggressive default may be 2)
+    # require at least CONF_MIN_TFS confirmations
     if not (tf_confirmations >= CONF_MIN_TFS and chosen_dir and chosen_entry is not None):
         return False
 
@@ -482,12 +499,42 @@ def analyze_symbol(symbol):
     confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
     confidence_pct = max(0.0, min(100.0, confidence_pct))
 
-    # --- Aggressive Mode Safety Check (small fallback to avoid junk signals) ---
+    # safety check
     if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
         print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
         skipped_signals += 1
         return False
-    # -------------------------------------------------------------------------
+
+    # ===== Hybrid 4H lock decision =====
+    # If symbol is explicitly volatile -> enforce 4h lock (protect)
+    # Else if symbol is in MAJOR_COINS -> skip 4h lock (faster BTC/ETH signals)
+    # Else -> enforce 4h lock (default Mode B)
+    enforce_4h_lock = True
+    sym_s = sanitize_symbol(symbol)
+    if sym_s in VOLATILE_LOCK:
+        enforce_4h_lock = True
+    elif sym_s in MAJOR_COINS:
+        enforce_4h_lock = False
+    else:
+        enforce_4h_lock = True
+
+    if enforce_4h_lock:
+        trend_4h = get_4h_trend(symbol)
+        if trend_4h is None:
+            print(f"Skipping {symbol}: insufficient 4H data for Mode B trend lock.")
+            skipped_signals += 1
+            return False
+        if chosen_dir == "BUY" and trend_4h != "bull":
+            print(f"Skipping {symbol}: 4H trend is {trend_4h}, blocking BUY (Mode B).")
+            skipped_signals += 1
+            return False
+        if chosen_dir == "SELL" and trend_4h != "bear":
+            print(f"Skipping {symbol}: 4H trend is {trend_4h}, blocking SELL (Mode B).")
+            skipped_signals += 1
+            return False
+    else:
+        # majors: no 4H lock — allow faster signals
+        pass
 
     # global open-trade / exposure limits
     if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
@@ -503,7 +550,7 @@ def analyze_symbol(symbol):
         return False
     recent_signals[sig] = time.time()
 
-    # directional per-symbol cooldown: avoid stacking same-direction rapid entries
+    # directional per-symbol cooldown
     dir_key = (symbol, chosen_dir)
     if last_directional_trade.get(dir_key, 0) + DIRECTIONAL_COOLDOWN_SEC > time.time():
         print(f"Skipping {symbol}: directional cooldown active for {chosen_dir}.")
@@ -517,7 +564,7 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # ----- BTC correlation filter -----
+    # BTC correlation filter
     btc30_bias = get_btc_30m_bias()
     if btc30_bias is not None:
         if chosen_dir == "BUY" and btc30_bias == "bear":
@@ -529,16 +576,13 @@ def analyze_symbol(symbol):
             skipped_signals += 1
             return False
 
-    # ----- Dual bias flip rule for reversal trades -----
-    # identify higher timeframe bias for the chosen_tf (try 30m if chosen_tf is 15m)
+    # dual bias flip rule for reversal trades
     try:
         higher_tf = "30m" if chosen_tf == "15m" else ("1h" if chosen_tf == "30m" else "4h")
     except Exception:
         higher_tf = "30m"
-    # get bias on higher tf
     df_high = get_klines(symbol, higher_tf, limit=120)
     bias_high = smc_bias(df_high) if df_high is not None and len(df_high) >= 60 else None
-    # if trade is a reversal (chosen_dir disagrees with higher-tf bias) require both 15m & 30m to have flipped recently
     if bias_high is not None:
         is_reversal = (chosen_dir == "BUY" and bias_high == "bear") or (chosen_dir == "SELL" and bias_high == "bull")
         if is_reversal:
@@ -549,7 +593,7 @@ def analyze_symbol(symbol):
                 skipped_signals += 1
                 return False
 
-    # ----- volume consistency check on chosen timeframe (require last 2 candles above MA*1.3) -----
+    # volume consistency check on chosen timeframe (require last 2 candles above MA*1.3)
     df_chosen = get_klines(symbol, chosen_tf, limit=80)
     if df_chosen is None or len(df_chosen) < 10:
         skipped_signals += 1
@@ -567,7 +611,6 @@ def analyze_symbol(symbol):
     sl, tp1, tp2, tp3 = tp_sl
 
     units, margin, exposure, risk_used = pos_size_units(entry, sl, confidence_pct)
-
     if units <= 0 or margin <= 0 or exposure <= 0:
         print(f"Skipping {symbol}: invalid position sizing (units:{units}, margin:{margin}).")
         skipped_signals += 1
@@ -761,12 +804,21 @@ def summary():
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v11 Top80 (Binance.US, Aggressive + Smart Filters) deployed — sanitization + aggressive defaults active.")
-print("✅ SIRTS v11 Top80 deployed.")
+send_message("✅ SIRTS v11 Top80 (Binance.US) deployed — Hybrid Mode active: MAJORS priority (Option B). CONF_MIN=55.")
+print("✅ SIRTS v11 Top80 deployed (Hybrid Mode active).")
 
 try:
     SYMBOLS = get_top_symbols(TOP_SYMBOLS)
-    print(f"Monitoring {len(SYMBOLS)} symbols (Top {TOP_SYMBOLS}).")
+    # reorder symbols so MAJOR_COINS come first
+    SYMBOLS = [s for s in SYMBOLS if s in MAJOR_COINS] + [s for s in SYMBOLS if s not in MAJOR_COINS]
+    # dedupe while preserving order
+    seen = set(); ordered = []
+    for s in SYMBOLS:
+        if s not in seen:
+            seen.add(s)
+            ordered.append(s)
+    SYMBOLS = ordered
+    print(f"Monitoring {len(SYMBOLS)} symbols (Top {TOP_SYMBOLS}), majors prioritized.")
 except Exception as e:
     SYMBOLS = ["BTCUSDT","ETHUSDT"]
     print("Warning retrieving top symbols, defaulting to BTCUSDT & ETHUSDT.")
