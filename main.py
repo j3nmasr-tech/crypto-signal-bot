@@ -47,17 +47,16 @@ MIN_TF_SCORE  = 55      # per-TF threshold
 CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
 CONFIDENCE_MIN = 55.0   # lowered from 60 -> 55 per your request
 
-MIN_QUOTE_VOLUME = 1_000_000.0
+MIN_QUOTE_VOLUME = 500_000.0
 TOP_SYMBOLS = 80
 
-# ===== BINANCE .US ENDPOINTS =====
-BINANCE_KLINES = "https://api.binance.us/api/v3/klines"
-BINANCE_PRICE  = "https://api.binance.us/api/v3/ticker/price"
-BINANCE_24H    = "https://api.binance.us/api/v3/ticker/24hr"
+# ===== BINANCE GLOBAL ENDPOINTS =====
+BINANCE_KLINES = "https://api.binance.com/api/v3/klines"
+BINANCE_PRICE  = "https://api.binance.com/api/v3/ticker/price"
+BINANCE_24H    = "https://api.binance.com/api/v3/ticker/24hr"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
 
 LOG_CSV = "./sirts_v11_signals.csv"
-
 # ===== NEW SAFEGUARDS =====
 STRICT_TF_AGREE = False
 MAX_OPEN_TRADES = 6
