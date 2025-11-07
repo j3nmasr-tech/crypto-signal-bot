@@ -50,6 +50,11 @@ CONFIDENCE_MIN = 62.0   # lowered from 60 -> 55 per your request
 MIN_QUOTE_VOLUME = 700_000.0
 TOP_SYMBOLS = 80
 
+# ===== ADX CHOP FILTER SETTINGS (ADDED) =====
+ADX_PERIOD = 14
+ADX_MIN = 20.0   # require ADX >= 20 on both 15m and 30m to avoid chop
+# (You can increase to 25 for stronger/non-choppy requirement.)
+
 # ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
 BINANCE_KLINES = "https://api.bybit.com/v5/market/kline"
 BINANCE_PRICE  = "https://api.bybit.com/v5/market/tickers"
@@ -304,6 +309,70 @@ def volume_ok(df, required_consecutive=1):
     last_vols = df["volume"].iloc[-required_consecutive:].values
     return all(v > ma * 1.3 for v in last_vols)
 
+# ===== ADX FUNCTIONS (ADDED) =====
+def calculate_adx(df, period=ADX_PERIOD):
+    """
+    Calculate ADX (and +DI, -DI optionally) using True Range and smoothed values.
+    Returns ADX series (numpy array) aligned with df indices (NaN for leading values).
+    """
+    if df is None or len(df) < period + 2:
+        return None
+
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    # True Range
+    tr1 = high - low
+    tr2 = (high - close.shift(1)).abs()
+    tr3 = (low - close.shift(1)).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    # +DM and -DM
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    # Smooth TR, +DM, -DM with Wilder's smoothing (EMA-like)
+    tr_smooth = tr.rolling(window=period).sum()
+    plus_dm_smooth = pd.Series(plus_dm).rolling(window=period).sum()
+    minus_dm_smooth = pd.Series(minus_dm).rolling(window=period).sum()
+
+    # Prevent division by zero
+    tr_smooth = tr_smooth.replace(0, np.nan)
+
+    plus_di = 100 * (plus_dm_smooth / tr_smooth)
+    minus_di = 100 * (minus_dm_smooth / tr_smooth)
+    dx = 100 * (np.abs(plus_di - minus_di) / (plus_di + minus_di)).replace([np.inf, -np.inf], np.nan)
+
+    adx = dx.rolling(window=period).mean()
+    return adx.values  # numpy array
+
+def adx_15m_30m_ok(symbol):
+    """
+    Return True if both 15m and 30m ADX(period=ADX_PERIOD) >= ADX_MIN.
+    If ADX cannot be computed for either timeframe, return False (conservative).
+    """
+    try:
+        df15 = get_klines(symbol, "15m", limit=ADX_PERIOD*4 + 10)
+        df30 = get_klines(symbol, "30m", limit=ADX_PERIOD*4 + 10)
+        if df15 is None or df30 is None:
+            return False
+        adx15 = calculate_adx(df15, ADX_PERIOD)
+        adx30 = calculate_adx(df30, ADX_PERIOD)
+        if adx15 is None or adx30 is None:
+            return False
+        # take last non-nan value
+        last_adx15 = float(pd.Series(adx15).dropna().iloc[-1]) if pd.Series(adx15).dropna().size>0 else None
+        last_adx30 = float(pd.Series(adx30).dropna().iloc[-1]) if pd.Series(adx30).dropna().size>0 else None
+        if last_adx15 is None or last_adx30 is None:
+            return False
+        return (last_adx15 >= ADX_MIN) and (last_adx30 >= ADX_MIN)
+    except Exception as e:
+        print(f"ADX calc error for {symbol}: {e}")
+        return False
+
 # ===== DOUBLE TIMEFRAME CONFIRMATION =====
 def get_direction_from_ma(df, span=20):
     try:
@@ -508,6 +577,13 @@ def analyze_symbol(symbol):
     if vol24 < MIN_QUOTE_VOLUME:
         skipped_signals += 1
         return False
+
+    # ===== ADX CHOP FILTER (INSERTED) =====
+    if not adx_15m_30m_ok(symbol):
+        print(f"Skipping {symbol}: ADX chop filter triggered (15m/30m ADX < {ADX_MIN}).")
+        skipped_signals += 1
+        return False
+    # ===== END ADX FILTER =====
 
     if last_trade_time.get(symbol, 0) > now:
         print(f"Cooldown active for {symbol}, skipping until {datetime.fromtimestamp(last_trade_time.get(symbol))}")
