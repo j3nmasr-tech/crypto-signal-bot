@@ -52,7 +52,7 @@ TOP_SYMBOLS = 80
 
 # ===== ADX CHOP FILTER SETTINGS (ADDED) =====
 ADX_PERIOD = 14
-ADX_MIN = 28.0   # require ADX >= 20 on both 15m and 30m to avoid chop
+ADX_MIN = 24.0   # require ADX >= 20 on both 15m and 30m to avoid chop
 # (You can increase to 25 for stronger/non-choppy requirement.)
 
 # ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
@@ -649,24 +649,40 @@ def analyze_symbol(symbol):
 
     print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations. Breakdown: {breakdown_per_tf}")
 
-    # require at least CONF_MIN_TFS confirmations
     if not (tf_confirmations >= CONF_MIN_TFS and chosen_dir and chosen_entry is not None):
         return False
 
-    # compute confidence
     confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
     confidence_pct = max(0.0, min(100.0, confidence_pct))
 
-    # safety check
     if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
         print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
-        skipped_signals += 1
-        return False
+        skipped_signals += 1        return False
 
-    # ===== Hybrid 4H lock decision =====
-    # If symbol is explicitly volatile -> enforce 4h lock (protect)
-    # Else if symbol is in MAJOR_COINS -> skip 4h lock (faster BTC/ETH signals)
-    # Else -> enforce 4h lock (default Mode B)
+    # ===== SAFE BTC TREND FILTER (INSERTED) =====
+    try:
+        btc_df_15 = get_klines("BTCUSDT", "15m", limit=120)
+        btc_df_30 = get_klines("BTCUSDT", "30m", limit=120)
+
+        if btc_df_15 is not None and btc_df_30 is not None:
+            btc_bias_15 = smc_bias(btc_df_15)
+            btc_bias_30 = smc_bias(btc_df_30)
+
+            if btc_bias_15 is not None and btc_bias_30 is not None:
+
+                if chosen_dir == "BUY" and (btc_bias_15 == "bear" or btc_bias_30 == "bear"):
+                    print(f"Skipping {symbol}: SAFE BTC filter → BTC bearish → blocking BUY.")
+                    skipped_signals += 1
+                    return False
+
+                if chosen_dir == "SELL" and (btc_bias_15 == "bull" or btc_bias_30 == "bull"):
+                    print(f"Skipping {symbol}: SAFE BTC filter → BTC bullish → blocking SELL.")
+                    skipped_signals += 1
+                    return False
+    except:
+        pass
+    # ===== END SAFE BTC FILTER =====
+
     enforce_4h_lock = True
     sym_s = sanitize_symbol(symbol)
     if sym_s in VOLATILE_LOCK:
@@ -690,17 +706,12 @@ def analyze_symbol(symbol):
             print(f"Skipping {symbol}: 4H trend is {trend_4h}, blocking SELL (Mode B).")
             skipped_signals += 1
             return False
-    else:
-        # majors: no 4H lock — allow faster signals
-        pass
 
-    # global open-trade / exposure limits
     if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
         print(f"Skipping {symbol}: max open trades reached ({MAX_OPEN_TRADES}).")
         skipped_signals += 1
         return False
 
-    # dedupe on signature
     sig = (symbol, chosen_dir, round(chosen_entry, 6))
     if recent_signals.get(sig, 0) + RECENT_SIGNAL_SIGNATURE_EXPIRE > time.time():
         print(f"Skipping {symbol}: duplicate recent signal {sig}.")
@@ -708,7 +719,6 @@ def analyze_symbol(symbol):
         return False
     recent_signals[sig] = time.time()
 
-    # directional per-symbol cooldown
     dir_key = (symbol, chosen_dir)
     if last_directional_trade.get(dir_key, 0) + DIRECTIONAL_COOLDOWN_SEC > time.time():
         print(f"Skipping {symbol}: directional cooldown active for {chosen_dir}.")
@@ -722,36 +732,6 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # BTC correlation filter
-    btc30_bias = get_btc_30m_bias()
-    if btc30_bias is not None:
-        if chosen_dir == "BUY" and btc30_bias == "bear":
-            print(f"Skipping {symbol}: BTC 30m bias is bear; skipping counter-BTC BUY.")
-            skipped_signals += 1
-            return False
-        if chosen_dir == "SELL" and btc30_bias == "bull":
-            print(f"Skipping {symbol}: BTC 30m bias is bull; skipping counter-BTC SELL.")
-            skipped_signals += 1
-            return False
-
-    # dual bias flip rule for reversal trades
-    try:
-        higher_tf = "30m" if chosen_tf == "15m" else ("1h" if chosen_tf == "30m" else "4h")
-    except Exception:
-        higher_tf = "30m"
-    df_high = get_klines(symbol, higher_tf, limit=120)
-    bias_high = smc_bias(df_high) if df_high is not None and len(df_high) >= 60 else None
-    if bias_high is not None:
-        is_reversal = (chosen_dir == "BUY" and bias_high == "bear") or (chosen_dir == "SELL" and bias_high == "bull")
-        if is_reversal:
-            flip_15 = bias_recent_flip(symbol, "15m", "bull" if chosen_dir=="BUY" else "bear", lookback_candles=3)
-            flip_30 = bias_recent_flip(symbol, "30m", "bull" if chosen_dir=="BUY" else "bear", lookback_candles=3)
-            if not (flip_15 and flip_30):
-                print(f"Skipping {symbol}: reversal detected but dual bias flip missing (15m:{flip_15},30m:{flip_30}).")
-                skipped_signals += 1
-                return False
-
-    # volume consistency check on chosen timeframe (require last 2 candles above MA*1.3)
     df_chosen = get_klines(symbol, chosen_tf, limit=80)
     if df_chosen is None or len(df_chosen) < 10:
         skipped_signals += 1
