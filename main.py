@@ -657,7 +657,8 @@ def analyze_symbol(symbol):
 
     if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
         print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
-        skipped_signals += 1        return False
+        skipped_signals += 1        
+        return False
 
     # ===== SAFE BTC TREND FILTER (INSERTED) =====
     try:
