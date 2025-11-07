@@ -45,14 +45,14 @@ WEIGHT_VOLUME = 0.15
 # ===== Aggressive-mode defaults (confirmed) =====
 MIN_TF_SCORE  = 55      # per-TF threshold
 CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
-CONFIDENCE_MIN = 55.0   # lowered from 60 -> 55 per your request
+CONFIDENCE_MIN = 50.0   # lowered from 60 -> 55 per your request
 
 MIN_QUOTE_VOLUME = 700_000.0
 TOP_SYMBOLS = 80
 
 # ===== ADX CHOP FILTER SETTINGS (ADDED) =====
 ADX_PERIOD = 14
-ADX_MIN = 24.0   # require ADX >= 20 on both 15m and 30m to avoid chop
+ADX_MIN = 18.0   # require ADX >= 20 on both 15m and 30m to avoid chop
 # (You can increase to 25 for stronger/non-choppy requirement.)
 
 # ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
