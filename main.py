@@ -52,7 +52,7 @@ TOP_SYMBOLS = 80
 
 # ===== ADX CHOP FILTER SETTINGS (ADDED) =====
 ADX_PERIOD = 14
-ADX_MIN = 20.0   # require ADX >= 20 on both 15m and 30m to avoid chop
+ADX_MIN = 28.0   # require ADX >= 20 on both 15m and 30m to avoid chop
 # (You can increase to 25 for stronger/non-choppy requirement.)
 
 # ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
