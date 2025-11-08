@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
-# SIRTS v11 – Top 80 | BYBIT (USDT Perpetual: data-only) + symbol sanitization + Aggressive Mode + Smart Filters
-# Ready-to-run modified: Hybrid Mode, Majors priority (Option B), CONFIDENCE_MIN=55
-# NOTE: Only network/data functions changed (Binance → Bybit linear). All logic unchanged.
+# SIRTS v11.1 – Top 40 | BYBIT (USDT Perpetual: data-only)
+# Fixed/robust: Bybit parsing, SAFE-BTC self-block, recent-signals logic, telegram rate-limit, main loop 2min
 
 import os
 import re
@@ -32,7 +31,7 @@ COOLDOWN_TIME_FAIL    = 45 * 60
 
 VOLATILITY_THRESHOLD_PCT = 2.5
 VOLATILITY_PAUSE = 1800
-CHECK_INTERVAL = 60
+CHECK_INTERVAL = 120  # user requested: every 2 minutes
 
 API_CALL_DELAY = 0.05
 
@@ -48,12 +47,11 @@ CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
 CONFIDENCE_MIN = 50.0   # lowered from 60 -> 55 per your request
 
 MIN_QUOTE_VOLUME = 700_000.0
-TOP_SYMBOLS = 20  # was 80 before
+TOP_SYMBOLS = 40  # user requested top 40
 
 # ===== ADX CHOP FILTER SETTINGS (ADDED) =====
 ADX_PERIOD = 14
-ADX_MIN = 18.0   # require ADX >= 20 on both 15m and 30m to avoid chop
-# (You can increase to 25 for stronger/non-choppy requirement.)
+ADX_MIN = 18.0   # require ADX >= 18 on both 15m and 30m to avoid chop
 
 # ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
 BINANCE_KLINES = "https://api.bybit.com/v5/market/kline"
@@ -109,30 +107,47 @@ MAJOR_COINS = {
 # Keep a short list of coins we want the strict 4H-lock for regardless (avoid past losers)
 VOLATILE_LOCK = {"XRPUSDT","ZECUSDT","DASHUSDT"}  # you can edit this set
 
+# ===== TELEGRAM RATE LIMIT =====
+TELEGRAM_COOLDOWN = 2.0  # seconds between messages (small throttle)
+_last_telegram_time = 0.0
+
 # ===== HELPERS =====
 def send_message(text):
+    global _last_telegram_time
+    # If telegram not configured, just print (signal-only mode)
     if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram not configured:", text)
+        print("Telegram not configured (message):", text)
+        return False
+    now = time.time()
+    if now - _last_telegram_time < TELEGRAM_COOLDOWN:
+        # skip sending if within cooldown to avoid flooding
+        print("Telegram cooldown active, skipping message.")
         return False
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        r = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                       data={"chat_id": CHAT_ID, "text": text}, timeout=10)
-        return True
+        if r.status_code == 200:
+            _last_telegram_time = now
+            return True
+        else:
+            print("Telegram send failed:", r.status_code, r.text)
+            return False
     except Exception as e:
         print("Telegram send error:", e)
         return False
 
-def safe_get_json(url, params=None, timeout=3, retries=1):
-    """Fetch JSON with light retry/backoff and logging."""
+def safe_get_json(url, params=None, timeout=5, retries=2):
+    """Fetch JSON with light retry/backoff and logging. Increased default retries for Bybit reliability."""
     for attempt in range(retries + 1):
         try:
             r = requests.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
-            print(f"⚠️ API request error ({e}) for {url} params={params} attempt={attempt+1}/{retries+1}")
+            wait = 0.6 * (attempt + 1)
+            print(f"⚠️ API request error ({e}) for {url} params={params} attempt={attempt+1}/{retries+1}, retrying in {wait}s")
             if attempt < retries:
-                time.sleep(0.5 * (attempt + 1))
+                time.sleep(wait)
                 continue
             return None
         except Exception as e:
@@ -141,29 +156,81 @@ def safe_get_json(url, params=None, timeout=3, retries=1):
 
 # ===== REPLACED: Top symbols (Bybit linear) =====
 def get_top_symbols(n=TOP_SYMBOLS):
-    data = safe_get_json(BINANCE_24H, {"category":"linear"}, timeout=3, retries=1)
+    data = safe_get_json(BINANCE_24H, {"category":"linear"}, timeout=5, retries=2)
     if not data or "result" not in data or "list" not in data["result"]:
         return ["BTCUSDT","ETHUSDT"]
     lst = data["result"]["list"]
-    # some endpoints may use turnover24h or turnover; be robust
+    # robust turnover parsing
     usdt = [d for d in lst if isinstance(d.get("symbol", ""), str) and d["symbol"].endswith("USDT")]
-    usdt.sort(key=lambda x: float(x.get("turnover24h", x.get("turnover", 0) or 0)), reverse=True)
+    def _turnover_val(d):
+        for k in ("turnover24h","turnover","quoteVolume","volume24h","quote_vol","turnover_24h"):
+            if k in d and d[k] not in (None,""):
+                try:
+                    return float(d[k])
+                except:
+                    try:
+                        return float(str(d[k]).replace(",",""))
+                    except:
+                        continue
+        # fallback: try volume * lastPrice if available
+        try:
+            vol = float(d.get("volume", 0) or 0)
+            last = float(d.get("lastPrice", d.get("last", 0) or 0))
+            return vol * last
+        except:
+            return 0.0
+    usdt.sort(key=lambda x: _turnover_val(x), reverse=True)
     symbols = [sanitize_symbol(d["symbol"]) for d in usdt[:n]]
-    # ensure BTC & ETH are first
+    # ensure BTC & ETH are first if present
     symbols = [s for s in ["BTCUSDT","ETHUSDT"] if s in symbols] + [s for s in symbols if s not in ["BTCUSDT","ETHUSDT"]]
     return symbols
+
 # ===== REPLACED: 24h quote volume (Bybit linear) =====
 def get_24h_quote_volume(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return 0.0
-    j = safe_get_json(BINANCE_24H, {"category":"linear", "symbol": symbol}, timeout=3, retries=1)
+    j = safe_get_json(BINANCE_24H, {"category":"linear", "symbol": symbol}, timeout=5, retries=2)
     try:
         if not j or "result" not in j or "list" not in j["result"] or len(j["result"]["list"]) == 0:
             return 0.0
         d = j["result"]["list"][0]
-        # Bybit uses turnover24h as USD turnover; fallback to other keys
-        return float(d.get("turnover24h", d.get("turnover", d.get("quoteVolume", 0)) or 0))
+        # try common turnover keys first
+        for k in ("turnover24h", "turnover", "quoteVolume", "volume24h", "quote_vol", "turnover_24h"):
+            if k in d and d[k] not in (None, ""):
+                try:
+                    return float(d[k])
+                except:
+                    try:
+                        return float(str(d[k]).replace(",",""))
+                    except:
+                        pass
+        # fallback: if volume and lastPrice available, approximate quote turnover = volume * lastPrice
+        vol = None
+        price = None
+        if "volume" in d and d["volume"] not in (None, ""):
+            try:
+                vol = float(d["volume"])
+            except:
+                try:
+                    vol = float(str(d["volume"]).replace(",",""))
+                except:
+                    vol = None
+        # try multiple possible price keys
+        for pk in ("lastPrice", "last", "last_price", "close", "price"):
+            if pk in d and d[pk] not in (None, ""):
+                try:
+                    price = float(d[pk])
+                    break
+                except:
+                    try:
+                        price = float(str(d[pk]).replace(",",""))
+                        break
+                    except:
+                        price = None
+        if vol is not None and price is not None:
+            return vol * price
+        return 0.0
     except Exception:
         return 0.0
 
@@ -181,32 +248,26 @@ def get_klines(symbol, interval="15m", limit=200):
     }
 
     params = {"category":"linear", "symbol": symbol, "interval": tf_map.get(interval, "15"), "limit": limit}
-    data = safe_get_json(BINANCE_KLINES, params=params, timeout=3, retries=1)
+    data = safe_get_json(BINANCE_KLINES, params=params, timeout=5, retries=2)
     if not data or "result" not in data or "list" not in data["result"]:
         return None
 
     kl = data["result"]["list"]
 
-    # Bybit returns either list-of-lists or list-of-dicts depending on endpoint version;
-    # handle both. Each list entry typically: [start, open, high, low, close, volume, turnover]
     try:
         if len(kl) == 0:
             return None
 
         # If it's list-of-lists:
         if isinstance(kl[0], (list, tuple)):
-            # keep only first 6 or 7 entries if present
             rows = []
             for row in kl:
-                # normalize length
                 if len(row) >= 6:
                     rows.append(row[:6])
             df = pd.DataFrame(rows, columns=["t","o","h","l","c","v"])
         elif isinstance(kl[0], dict):
-            # some variants may be dicts with keys like 'start','open','high','low','close','volume'
             rows = []
             for d in kl:
-                # prefer common keys, fallback safely
                 t = d.get("start", d.get("t", d.get("open_time", None)))
                 o = d.get("open", d.get("o"))
                 h = d.get("high", d.get("h"))
@@ -220,31 +281,33 @@ def get_klines(symbol, interval="15m", limit=200):
         else:
             return None
 
-        # ensure numeric and consistent column names like your original function
+        # ensure numeric and consistent column names
         df[["o","h","l","c","v"]] = df[["o","h","l","c","v"]].astype(float)
         df = df[["o","h","l","c","v"]]
         df.columns = ["open","high","low","close","volume"]
 
-        # Ensure chronological order (oldest first)
+        # Ensure chronological order (oldest first) - robust by checking t if available
         try:
-            # if t available, check ordering
-            # note: for dicts we may not have robust t; the DataFrame index order is preserved from API
-            # We'll attempt to detect descending order and reverse if necessary by comparing first two close timestamps/values
-            if len(df) >= 2:
-                # No strong timestamp available in df columns, so we rely on Bybit kl list order heuristics:
-                # If last candle time seems smaller than first (descending), reverse
-                # We check original kl list timestamps if available
-                first_ts = None
-                last_ts = None
-                # attempt to extract timestamps from kl
-                if isinstance(kl[0], (list, tuple)) and len(kl[0]) >= 1:
+            if "t" in locals() or ("t" in df.columns and len(df) > 1):
+                pass
+            # If the API returned descending rows, reverse
+            # Heuristic: check if last close < first close and timeframe common direction - safer to check timestamps if available
+            if isinstance(kl[0], (list, tuple)) and len(kl[0]) >= 1:
+                try:
                     first_ts = float(kl[0][0])
                     last_ts = float(kl[-1][0])
-                elif isinstance(kl[0], dict):
+                    if first_ts > last_ts:
+                        df = df.iloc[::-1].reset_index(drop=True)
+                except:
+                    pass
+            elif isinstance(kl[0], dict):
+                try:
                     first_ts = float(kl[0].get("start", kl[0].get("t", 0) or 0))
                     last_ts = float(kl[-1].get("start", kl[-1].get("t", 0) or 0))
-                if first_ts and last_ts and first_ts > last_ts:
-                    df = df.iloc[::-1].reset_index(drop=True)
+                    if first_ts > last_ts:
+                        df = df.iloc[::-1].reset_index(drop=True)
+                except:
+                    pass
         except Exception:
             pass
 
@@ -258,13 +321,27 @@ def get_price(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
-    j = safe_get_json(BINANCE_PRICE, {"category": "linear", "symbol": symbol}, timeout=3, retries=1)
+    j = safe_get_json(BINANCE_PRICE, {"category": "linear", "symbol": symbol}, timeout=5, retries=2)
     try:
         if not j or "result" not in j or "list" not in j["result"] or len(j["result"]["list"]) == 0:
             return None
         d = j["result"]["list"][0]
-        # lastPrice might be named lastPrice; fallback to last_tick or last
-        return float(d.get("lastPrice", d.get("last", d.get("last_price", None))))
+        for k in ("lastPrice", "last_price", "last", "price", "close", "last_tick"):
+            if k in d and d[k] not in (None, ""):
+                try:
+                    return float(d[k])
+                except:
+                    try:
+                        return float(str(d[k]).replace(",",""))
+                    except:
+                        continue
+        # as fallback, try to compute average from high/low if present (last resort)
+        if "high" in d and "low" in d and d["high"] not in (None,"") and d["low"] not in (None,""):
+            try:
+                return (float(d["high"]) + float(d["low"])) / 2.0
+            except:
+                pass
+        return None
     except Exception:
         return None
 
@@ -313,10 +390,6 @@ def volume_ok(df, required_consecutive=1):
 
 # ===== ADX FUNCTIONS (ADDED) =====
 def calculate_adx(df, period=ADX_PERIOD):
-    """
-    Calculate ADX (and +DI, -DI optionally) using True Range and smoothed values.
-    Returns ADX series (numpy array) aligned with df indices (NaN for leading values).
-    """
     if df is None or len(df) < period + 2:
         return None
 
@@ -324,24 +397,20 @@ def calculate_adx(df, period=ADX_PERIOD):
     low = df["low"]
     close = df["close"]
 
-    # True Range
     tr1 = high - low
     tr2 = (high - close.shift(1)).abs()
     tr3 = (low - close.shift(1)).abs()
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-    # +DM and -DM
     up_move = high.diff()
     down_move = -low.diff()
     plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
     minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
 
-    # Smooth TR, +DM, -DM with Wilder's smoothing (EMA-like)
     tr_smooth = tr.rolling(window=period).sum()
     plus_dm_smooth = pd.Series(plus_dm).rolling(window=period).sum()
     minus_dm_smooth = pd.Series(minus_dm).rolling(window=period).sum()
 
-    # Prevent division by zero
     tr_smooth = tr_smooth.replace(0, np.nan)
 
     plus_di = 100 * (plus_dm_smooth / tr_smooth)
@@ -349,13 +418,9 @@ def calculate_adx(df, period=ADX_PERIOD):
     dx = 100 * (np.abs(plus_di - minus_di) / (plus_di + minus_di)).replace([np.inf, -np.inf], np.nan)
 
     adx = dx.rolling(window=period).mean()
-    return adx.values  # numpy array
+    return adx.values
 
 def adx_15m_30m_ok(symbol):
-    """
-    Return True if both 15m and 30m ADX(period=ADX_PERIOD) >= ADX_MIN.
-    If ADX cannot be computed for either timeframe, return False (conservative).
-    """
     try:
         df15 = get_klines(symbol, "15m", limit=ADX_PERIOD*4 + 10)
         df30 = get_klines(symbol, "30m", limit=ADX_PERIOD*4 + 10)
@@ -365,7 +430,6 @@ def adx_15m_30m_ok(symbol):
         adx30 = calculate_adx(df30, ADX_PERIOD)
         if adx15 is None or adx30 is None:
             return False
-        # take last non-nan value
         last_adx15 = float(pd.Series(adx15).dropna().iloc[-1]) if pd.Series(adx15).dropna().size>0 else None
         last_adx30 = float(pd.Series(adx30).dropna().iloc[-1]) if pd.Series(adx30).dropna().size>0 else None
         if last_adx15 is None or last_adx30 is None:
@@ -396,11 +460,6 @@ def tf_agree(symbol, tf_low, tf_high):
 
 # ===== 4H TREND LOCK (Mode B) =====
 def get_4h_trend(symbol):
-    """
-    Return 'bull' if last 4h close > 4h EMA200,
-           'bear' if last 4h close < 4h EMA200,
-           None if insufficient data.
-    """
     df4 = get_klines(symbol, "4h", limit=250)
     if df4 is None or len(df4) < 220:
         return None
@@ -471,7 +530,7 @@ def pos_size_units(entry, sl, confidence_pct):
 
 # ===== SENTIMENT =====
 def get_fear_greed_value():
-    j = safe_get_json(FNG_API, {}, timeout=3, retries=1)
+    j = safe_get_json(FNG_API, {}, timeout=5, retries=1)
     try:
         return int(j["data"][0]["value"])
     except:
@@ -565,6 +624,8 @@ def analyze_symbol(symbol):
     total_checked_signals += 1
     now = time.time()
     if time.time() < volatility_pause_until:
+        print(f"Global volatility pause active until {datetime.fromtimestamp(volatility_pause_until)}; skipping {symbol}")
+        skipped_signals += 1
         return False
 
     if not symbol or not isinstance(symbol, str):
@@ -576,6 +637,7 @@ def analyze_symbol(symbol):
         return False
 
     vol24 = get_24h_quote_volume(symbol)
+    print(f"DEBUG vol24 for {symbol}: {vol24}")
     if vol24 < MIN_QUOTE_VOLUME:
         skipped_signals += 1
         return False
@@ -662,28 +724,31 @@ def analyze_symbol(symbol):
         skipped_signals += 1        
         return False
 
-    # ===== SAFE BTC TREND FILTER (INSERTED) =====
+    # ===== SAFE BTC TREND FILTER (PATCHED) =====
     try:
-        btc_df_15 = get_klines("BTCUSDT", "15m", limit=120)
-        btc_df_30 = get_klines("BTCUSDT", "30m", limit=120)
+        # Don't run SAFE-BTC filter when analyzing BTC or ETH themselves (avoid self-blocking)
+        if sanitize_symbol(symbol) not in ("BTCUSDT", "ETHUSDT"):
+            btc_df_15 = get_klines("BTCUSDT", "15m", limit=120)
+            btc_df_30 = get_klines("BTCUSDT", "30m", limit=120)
 
-        if btc_df_15 is not None and btc_df_30 is not None:
-            btc_bias_15 = smc_bias(btc_df_15)
-            btc_bias_30 = smc_bias(btc_df_30)
+            if btc_df_15 is not None and btc_df_30 is not None:
+                btc_bias_15 = smc_bias(btc_df_15)
+                btc_bias_30 = smc_bias(btc_df_30)
 
-            if btc_bias_15 is not None and btc_bias_30 is not None:
+                if btc_bias_15 is not None and btc_bias_30 is not None:
+                    # block buys only if BTC short-term bias is bearish
+                    if chosen_dir == "BUY" and (btc_bias_15 == "bear" or btc_bias_30 == "bear"):
+                        print(f"Skipping {symbol}: SAFE BTC filter → BTC bearish → blocking BUY.")
+                        skipped_signals += 1
+                        return False
 
-                if chosen_dir == "BUY" and (btc_bias_15 == "bear" or btc_bias_30 == "bear"):
-                    print(f"Skipping {symbol}: SAFE BTC filter → BTC bearish → blocking BUY.")
-                    skipped_signals += 1
-                    return False
-
-                if chosen_dir == "SELL" and (btc_bias_15 == "bull" or btc_bias_30 == "bull"):
-                    print(f"Skipping {symbol}: SAFE BTC filter → BTC bullish → blocking SELL.")
-                    skipped_signals += 1
-                    return False
-    except:
-        pass
+                    # block sells only if BTC short-term bias is bullish
+                    if chosen_dir == "SELL" and (btc_bias_15 == "bull" or btc_bias_30 == "bull"):
+                        print(f"Skipping {symbol}: SAFE BTC filter → BTC bullish → blocking SELL.")
+                        skipped_signals += 1
+                        return False
+    except Exception as e:
+        print(f"SAFE BTC filter error for {symbol}: {e}")
     # ===== END SAFE BTC FILTER =====
 
     enforce_4h_lock = True
@@ -716,7 +781,7 @@ def analyze_symbol(symbol):
         return False
 
     sig = (symbol, chosen_dir, round(chosen_entry, 6))
-    if recent_signals.get(sig, 0) + RECENT_SIGNAL_SIGNATURE_EXPIRE > time.time():
+    if time.time() - recent_signals.get(sig, 0) < RECENT_SIGNAL_SIGNATURE_EXPIRE:
         print(f"Skipping {symbol}: duplicate recent signal {sig}.")
         skipped_signals += 1
         return False
@@ -732,6 +797,7 @@ def analyze_symbol(symbol):
 
     entry = get_price(symbol)
     if entry is None:
+        print(f"Skipping {symbol}: price fetch failed.")
         skipped_signals += 1
         return False
 
@@ -943,55 +1009,88 @@ def summary():
     print("Stats by side:", STATS["by_side"])
     print("Stats by TF:", STATS["by_tf"])
 
-# ===== STARTUP =====
-init_csv()
-send_message("✅ SIRTS v11 Top80 (Bybit USDT Perpetual data) deployed — Hybrid Mode active: MAJORS priority (Option B). CONF_MIN=55.")
-print("✅ SIRTS v11 Top80 deployed (Hybrid Mode active).")
+# ===== STARTUP & MAIN LOOP =====
+def main_loop():
+    init_csv()
+    send_message("✅ SIRTS v11.1 Top40 (Bybit USDT Perpetual) deployed — Hybrid Mode active: MAJORS priority (Option B). CONF_MIN=55.")
+    print("✅ SIRTS v11.1 Top40 deployed (Hybrid Mode active).")
 
-try:
-    SYMBOLS = get_top_symbols(TOP_SYMBOLS)
-    # reorder symbols so MAJOR_COINS come first
-    SYMBOLS = [s for s in SYMBOLS if s in MAJOR_COINS] + [s for s in SYMBOLS if s not in MAJOR_COINS]
-    # dedupe while preserving order
-    seen = set(); ordered = []
-    for s in SYMBOLS:
-        if s not in seen:
-            seen.add(s)
-            ordered.append(s)
-    SYMBOLS = ordered
-    print(f"Monitoring {len(SYMBOLS)} symbols (Top {TOP_SYMBOLS}), majors prioritized.")
-except Exception as e:
-    SYMBOLS = ["BTCUSDT","ETHUSDT"]
-    print("Warning retrieving top symbols, defaulting to BTCUSDT & ETHUSDT.")
-
-# ===== MAIN LOOP =====
-while True:
     try:
-        if btc_volatility_spike():
-            volatility_pause_until = time.time() + VOLATILITY_PAUSE
-            send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
-            print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
-
-        for i, sym in enumerate(SYMBOLS, start=1):
-            print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} …")
-            try:
-                analyze_symbol(sym)
-            except Exception as e:
-                print(f"⚠️ Error scanning {sym}: {e}")
-            time.sleep(API_CALL_DELAY)
-
-        check_trades()
-
-        now = time.time()
-        if now - last_heartbeat > 43200:
-            heartbeat()
-            last_heartbeat = now
-        if now - last_summary > 86400:
-            summary()
-            last_summary = now
-
-        print("Cycle completed at", datetime.utcnow().strftime("%H:%M:%S UTC"))
-        time.sleep(CHECK_INTERVAL)
+        SYMBOLS = get_top_symbols(TOP_SYMBOLS)
+        # reorder symbols so MAJOR_COINS come first
+        SYMBOLS = [s for s in SYMBOLS if s in MAJOR_COINS] + [s for s in SYMBOLS if s not in MAJOR_COINS]
+        # dedupe while preserving order
+        seen = set(); ordered = []
+        for s in SYMBOLS:
+            if s not in seen:
+                seen.add(s)
+                ordered.append(s)
+        SYMBOLS = ordered
+        print(f"Monitoring {len(SYMBOLS)} symbols (Top {TOP_SYMBOLS}), majors prioritized.")
     except Exception as e:
-        print("Main loop error:", e)
-        time.sleep(5)
+        SYMBOLS = ["BTCUSDT","ETHUSDT"]
+        print("Warning retrieving top symbols, defaulting to BTCUSDT & ETHUSDT.", e)
+
+    global last_heartbeat, last_summary, volatility_pause_until
+    last_heartbeat = time.time()
+    last_summary = time.time()
+    volatility_pause_until = 0
+
+    while True:
+        try:
+            # Pause if BTC volatility spike detected
+            if time.time() < volatility_pause_until:
+                remaining = int((volatility_pause_until - time.time()) / 60)
+                print(f"⏳ Paused due to BTC volatility spike — {remaining} minutes remaining.")
+                time.sleep(CHECK_INTERVAL)
+                continue
+
+            try:
+                if btc_volatility_spike():
+                    volatility_pause_until = time.time() + VOLATILITY_PAUSE
+                    send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
+                    print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
+            except Exception as e:
+                print("Error checking btc_volatility_spike:", e)
+
+            # Scan each symbol
+            for i, sym in enumerate(SYMBOLS, start=1):
+                print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} …")
+                try:
+                    analyze_symbol(sym)
+                except Exception as e:
+                    print(f"⚠️ Error scanning {sym}: {e}")
+                time.sleep(API_CALL_DELAY)
+
+            # Check trades
+            try:
+                check_trades()
+            except Exception as e:
+                print("Error checking trades:", e)
+
+            # Heartbeat every 12 hours
+            now = time.time()
+            if now - last_heartbeat > 43200:  # 12h
+                try:
+                    heartbeat()
+                    last_heartbeat = now
+                except Exception as e:
+                    print("Heartbeat error:", e)
+
+            # Daily summary every 24 hours
+            if now - last_summary > 86400:  # 24h
+                try:
+                    summary()
+                    last_summary = now
+                except Exception as e:
+                    print("Summary error:", e)
+
+            print("✅ Cycle completed at", datetime.utcnow().strftime("%H:%M:%S UTC"))
+            time.sleep(CHECK_INTERVAL)
+
+        except Exception as e:
+            print("Main loop error:", e)
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main_loop()
