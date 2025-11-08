@@ -48,7 +48,7 @@ CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
 CONFIDENCE_MIN = 50.0   # lowered from 60 -> 55 per your request
 
 MIN_QUOTE_VOLUME = 700_000.0
-TOP_SYMBOLS = 80
+TOP_SYMBOLS = 20  # was 80 before
 
 # ===== ADX CHOP FILTER SETTINGS (ADDED) =====
 ADX_PERIOD = 14
@@ -148,8 +148,10 @@ def get_top_symbols(n=TOP_SYMBOLS):
     # some endpoints may use turnover24h or turnover; be robust
     usdt = [d for d in lst if isinstance(d.get("symbol", ""), str) and d["symbol"].endswith("USDT")]
     usdt.sort(key=lambda x: float(x.get("turnover24h", x.get("turnover", 0) or 0)), reverse=True)
-    return [sanitize_symbol(d["symbol"]) for d in usdt[:n]]
-
+    symbols = [sanitize_symbol(d["symbol"]) for d in usdt[:n]]
+    # ensure BTC & ETH are first
+    symbols = [s for s in ["BTCUSDT","ETHUSDT"] if s in symbols] + [s for s in symbols if s not in ["BTCUSDT","ETHUSDT"]]
+    return symbols
 # ===== REPLACED: 24h quote volume (Bybit linear) =====
 def get_24h_quote_volume(symbol):
     symbol = sanitize_symbol(symbol)
