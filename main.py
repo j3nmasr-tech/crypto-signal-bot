@@ -42,16 +42,16 @@ WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
 # ===== Aggressive-mode defaults (confirmed) =====
-MIN_TF_SCORE  = 55      # per-TF threshold
+MIN_TF_SCORE  = 50.0      # per-TF threshold
 CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
-CONFIDENCE_MIN = 60.0   # lowered from 60 -> 55 per your request
+CONFIDENCE_MIN = 55.0   # lowered from 60 -> 55 per your request
 
-MIN_QUOTE_VOLUME = 700_000.0
+MIN_QUOTE_VOLUME = 100_000.0
 TOP_SYMBOLS = 40  # user requested top 40
 
 # ===== ADX CHOP FILTER SETTINGS (ADDED) =====
 ADX_PERIOD = 14
-ADX_MIN = 18.0   # require ADX >= 18 on both 15m and 30m to avoid chop
+ADX_MIN = 14.0   # require ADX >= 18 on both 15m and 30m to avoid chop
 
 # ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
 BINANCE_KLINES = "https://api.bybit.com/v5/market/kline"
