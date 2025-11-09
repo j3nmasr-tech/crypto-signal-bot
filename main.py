@@ -51,7 +51,7 @@ TOP_SYMBOLS = 40  # user requested top 40
 
 # ===== ADX CHOP FILTER SETTINGS (ADDED) =====
 ADX_PERIOD = 14
-ADX_MIN = 18.0   # require ADX >= 18 on both 15m and 30m to avoid chop
+ADX_MIN = 23.0   # require ADX >= 18 on both 15m and 30m to avoid chop
 
 # ===== REPLACED: BYBIT (USDT Perpetual / linear) ENDPOINTS (kept names for compatibility) =====
 BINANCE_KLINES = "https://api.bybit.com/v5/market/kline"
