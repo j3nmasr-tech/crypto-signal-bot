@@ -458,18 +458,23 @@ def tf_agree(symbol, tf_low, tf_high):
         return not STRICT_TF_AGREE
     return dir_low == dir_high
 
-# ===== 4H TREND LOCK (Mode B) =====
+# ===== 4H TREND LOCK (Improved / Debug Mode) =====
 def get_4h_trend(symbol):
-    df4 = get_klines(symbol, "4h", limit=250)
-    if df4 is None or len(df4) < 220:
+    df4 = get_klines(symbol, "4h", limit=120)
+    if df4 is None or len(df4) < 60:  # need only ~10 days of 4h data
+        print(f"⚠️ {symbol}: insufficient 4H data ({len(df4) if df4 is not None else 0})")
         return None
     try:
         ema200 = df4["close"].ewm(span=200).mean().iloc[-1]
         last_close = float(df4["close"].iloc[-1])
         if np.isnan(ema200):
+            print(f"⚠️ {symbol}: EMA200 calculation returned NaN")
             return None
-        return "bull" if last_close > ema200 else "bear"
-    except Exception:
+        trend = "bull" if last_close > ema200 else "bear"
+        print(f"📊 {symbol} 4H trend detected: {trend.upper()} (last={last_close:.2f}, ema200={ema200:.2f})")
+        return trend
+    except Exception as e:
+        print(f"⚠️ get_4h_trend error for {symbol}: {e}")
         return None
 
 # ===== ATR & POSITION SIZING =====
