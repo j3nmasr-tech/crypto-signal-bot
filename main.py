@@ -138,7 +138,7 @@ def get_24h_quote_volume(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return 0.0
-    j = safe_get_json(BYBIT_TICKERS, {"category":"linear","symbol":symbol}, timeout=4, retries=2)
+    j = safe_get_json(BYBIT_TICKERS, {"category":"linear","symbol":symbol}, timeout=15, retries=2)
     try:
         lst = j.get("result", {}).get("list", [])
         if not lst:
