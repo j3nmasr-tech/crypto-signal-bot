@@ -343,18 +343,15 @@ def btc_adx_4h_ok(min_adx=BTC_ADX_MIN, period=14):
     return float(adx)
 
 # ===== BTC DIRECTION & DOMINANCE =====
-def btc_direction_2tf():
+def btc_direction_1h():
     try:
         df1 = get_klines("BTCUSDT", "1h", 120)
-        df4 = get_klines("BTCUSDT", "4h", 120)
-        if df1 is None or df4 is None or len(df1) < 30 or len(df4) < 30:
+        if df1 is None or len(df1) < 30:
             return None
-        b1 = smc_bias(df1); b4 = smc_bias(df4)
-        if b1 == b4 == "bull": return "BULL"
-        if b1 == b4 == "bear": return "BEAR"
-        return None
+        b1 = smc_bias(df1)
+        return "BULL" if b1 == "bull" else "BEAR"
     except Exception as e:
-        print("btc_direction_2tf error:", e)
+        print("btc_direction_1h error:", e)
         return None
 
 def get_btc_dominance():
@@ -435,7 +432,7 @@ def analyze_symbol(symbol):
         return False
 
     # BTC checks: direction (1H & 4H must agree), dominance (blocks altcoins only), and ADX (4H) must be strong
-    btc_dir = btc_direction_2tf()
+    btc_dir = btc_direction_1h()
     btc_dom = get_btc_dominance()
     btc_adx = btc_adx_4h_ok()
 
