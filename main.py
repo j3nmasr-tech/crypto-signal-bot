@@ -499,7 +499,7 @@ def analyze_symbol(symbol):
             return False
 
     # ===== DOMINANCE FILTER (Blocks ALTS only) =====
-    BTC_DOM_MAX = 55.0
+    BTC_DOM_MAX = 60.0
     if symbol != "BTCUSDT":  # allow BTC signals no matter what
         if btc_dom is None:
             print(f"Skipping {symbol}: BTC dominance unavailable.")
