@@ -446,43 +446,49 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # BTC checks: direction (1H & 4H must agree), dominance (blocks altcoins only), and ADX (4H) must be strong
-    btc_dir = btc_direction_1h()
+    # ===== BTC MARKET STATE =====
+    btc_dir = btc_direction_1h()       # only 1H direction used
     btc_dom = get_btc_dominance()
-    btc_adx = btc_adx_4h_ok()
+    btc_adx = btc_adx_4h_ok()          # returns numeric ADX value
 
-    # require BTC direction agreement
+    # If BTC direction is unknown → block everything (for safety)
     if btc_dir is None:
-        print(f"Skipping {symbol}: BTC 1H/4H direction not aligned (blocking in scalp).")
+        print(f"Skipping {symbol}: BTC direction unclear.")
         skipped_signals += 1
         return False
 
-    # require BTC ADX to be available; if None -> block
-    if btc_adx is None:
-        print("Skipping: Could not compute BTC 4H ADX (blocking for safety).")
-        skipped_signals += 1
-        return False
+    # ===== ADX FILTER (Blocks ALTS only) =====
+    BTC_ADX_MIN = 18.0
+    if symbol != "BTCUSDT":  # allow BTC regardless
+        if btc_adx is None:
+            print(f"Skipping {symbol}: BTC ADX unavailable.")
+            skipped_signals += 1
+            return False
+        if btc_adx < BTC_ADX_MIN:
+            print(f"Skipping {symbol}: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN} (trend weak → no alt scalps).")
+            skipped_signals += 1
+            return False
 
-    # BTC ADX check (Moderate mode: do NOT block, only warn)
-    if btc_adx < BTC_ADX_MIN:
-        print(f"⚠ Warning: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN} → Market trend weak, entering with caution")
-        # No return → allow signal (moderate mode continues)
-# if symbol != "BTCUSDT":
-#     if btc_dom is not None and btc_dom > BTC_DOMINANCE_MAX:
-#         print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOMINANCE_MAX}% (blocking altcoins only).")
-#         skipped_signals += 1
-#         return False
-# if btc_dom is None:
-#     print("⚠️ Could not fetch BTC dominance — proceeding but consider checking connectivity.")
+    # ===== DOMINANCE FILTER (Blocks ALTS only) =====
+    BTC_DOM_MAX = 55.0
+    if symbol != "BTCUSDT":  # allow BTC signals no matter what
+        if btc_dom is None:
+            print(f"Skipping {symbol}: BTC dominance unavailable.")
+            skipped_signals += 1
+            return False
+        if btc_dom > BTC_DOM_MAX:
+            print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOM_MAX}% (alts suppressed).")
+            skipped_signals += 1
+            return False
 
-    # determine BTC risk multiplier
+    # ===== BTC RISK MULTIPLIER BASED ON DIRECTION =====
     if btc_dir == "BULL":
         btc_risk_mult = BTC_RISK_MULT_BULL
     elif btc_dir == "BEAR":
         btc_risk_mult = BTC_RISK_MULT_BEAR
     else:
         btc_risk_mult = BTC_RISK_MULT_MIXED
-
+        
     tf_confirmations = 0
     chosen_dir      = None
     chosen_entry    = None
