@@ -368,16 +368,44 @@ def btc_direction_1h():
         print("btc_direction_1h error:", e)
         return None
 
+import time
+
+_last_dom = None
+_last_dom_time = 0
+
 def get_btc_dominance():
+    global _last_dom, _last_dom_time
+
+    # Use cached value for 60 seconds (prevents API spam)
+    if _last_dom is not None and time.time() - _last_dom_time < 60:
+        return _last_dom
+
     try:
-        r = requests.get(COINPAPRIKA_GLOBAL, timeout=10)
-        r.raise_for_status()
+        r = requests.get(COINPAPRIKA_GLOBAL, timeout=8)
         data = r.json()
+
+        # CoinPaprika uses this key exactly
         dom = data.get("bitcoin_dominance_percentage")
-        return float(dom) if dom is not None else None
+
+        # If key missing or null → fallback
+        if dom is None:
+            for k, v in data.items():
+                if "dominance" in k.lower():
+                    dom = v
+                    break
+
+        if dom is None:
+            print("⚠️ BTC dominance missing in response.")
+            return _last_dom
+
+        dom = float(dom)
+        _last_dom = round(dom, 2)
+        _last_dom_time = time.time()
+        return _last_dom
+
     except Exception as e:
-        print("Dominance fetch error:", e)
-        return None
+        print("⚠️ Dominance fetch error:", e)
+        return _last_dom  # return last known, do NOT break bot
 
 def btc_volatility_spike():
     df = get_klines("BTCUSDT", "5m", 3)
