@@ -99,11 +99,23 @@ def send_message(text):
         print("Telegram not configured:", text)
         return False
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                      data={"chat_id": CHAT_ID, "text": text}, timeout=10)
+        r = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": int(CHAT_ID), "text": text},
+            timeout=10
+        )
+        result = r.json()
+
+        # ✅ Detect silent Telegram rejection
+        if not result.get("ok"):
+            print("❌ Telegram rejected message:", result)
+            return False
+        
+        print("✅ Telegram delivered:", text)
         return True
+
     except Exception as e:
-        print("Telegram send error:", e)
+        print("❌ Telegram send error:", e)
         return False
 
 def safe_get_json(url, params=None, timeout=5, retries=2):
