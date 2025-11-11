@@ -454,16 +454,15 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # require BTC ADX to be available and >= threshold; if None or < threshold -> block
-    if btc_adx is None:
-        print("Skipping: Could not compute BTC 4H ADX (blocking for safety).")
-        skipped_signals += 1
-        return False
-    
-    if btc_adx < BTC_ADX_MIN:
-    print(f"⚠ Warning: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN} → Market trend weak, entering with caution")
-    # Do NOT return here → allow signal to continue (Moderate Mode)
+# require BTC ADX to be available and >= threshold; if None or < threshold -> block
+if btc_adx is None:
+    print("Skipping: Could not compute BTC 4H ADX (blocking for safety).")
+    skipped_signals += 1
+    return False
 
+if btc_adx < BTC_ADX_MIN:
+    print(f"⚠ Warning: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN} → Market trend weak, entering with caution")
+    # No return → allow signal (Moderate mode)
 # if symbol != "BTCUSDT":
 #     if btc_dom is not None and btc_dom > BTC_DOMINANCE_MAX:
 #         print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOMINANCE_MAX}% (blocking altcoins only).")
