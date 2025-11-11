@@ -51,7 +51,7 @@ TOP_SYMBOLS = 10
 BYBIT_KLINES = "https://api.bybit.com/v5/market/kline"
 BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
-COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+COINPAPRIKA_GLOBAL = "https://api.coinpaprika.com/v1/global"
 
 LOG_CSV = "./sirts_v10_scalp_top10.csv"
 
@@ -370,10 +370,11 @@ def btc_direction_1h():
 
 def get_btc_dominance():
     try:
-        r = requests.get(COINGECKO_GLOBAL, timeout=10)
+        r = requests.get(COINPAPRIKA_GLOBAL, timeout=10)
         r.raise_for_status()
         data = r.json()
-        return float(data["data"]["market_cap_percentage"]["btc"])
+        dom = data.get("bitcoin_dominance_percentage")
+        return float(dom) if dom is not None else None
     except Exception as e:
         print("Dominance fetch error:", e)
         return None
