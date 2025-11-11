@@ -55,7 +55,7 @@ COINPAPRIKA_GLOBAL = "https://api.coinpaprika.com/v1/global"
 
 LOG_CSV = "./sirts_v10_scalp_top10.csv"
 
-BTC_DOMINANCE_MAX = 65.0
+BTC_DOMINANCE_MAX = 60.0
 BTC_RISK_MULT_BULL  = 1.00
 BTC_RISK_MULT_BEAR  = 0.70
 BTC_RISK_MULT_MIXED = 0.85
