@@ -355,6 +355,8 @@ def btc_adx_4h_ok(min_adx=BTC_ADX_MIN, period=14):
     return float(adx)
 
 # ===== BTC DIRECTION & DOMINANCE =====
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+
 def btc_direction_1h():
     try:
         df1 = get_klines("BTCUSDT", "1h", 120)
@@ -367,21 +369,22 @@ def btc_direction_1h():
         return None
 
 def get_btc_dominance():
-    j = safe_get_json(COINGECKO_GLOBAL, {}, timeout=5, retries=2)
     try:
-        m = j.get("data", {}).get("market_cap_percentage", {})
-        btc_pct = m.get("btc") or m.get("btc_dominance") or None
-        if btc_pct is None: return None
-        return float(btc_pct)
-    except Exception:
+        r = requests.get(COINGECKO_GLOBAL, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        return float(data["data"]["market_cap_percentage"]["btc"])
+    except Exception as e:
+        print("Dominance fetch error:", e)
         return None
 
 def btc_volatility_spike():
     df = get_klines("BTCUSDT", "5m", 3)
-    if df is None or len(df) < 3: return False
-    pct = (df["close"].iloc[-1]-df["close"].iloc[0])/df["close"].iloc[0]*100.0
+    if df is None or len(df) < 3:
+        return False
+    pct = (df["close"].iloc[-1] - df["close"].iloc[0]) / df["close"].iloc[0] * 100.0
     return abs(pct) >= VOLATILITY_THRESHOLD_PCT
-
+    
 # ===== LOGGING =====
 def init_csv():
     if not os.path.exists(LOG_CSV):
