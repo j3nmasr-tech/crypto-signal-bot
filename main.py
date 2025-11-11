@@ -455,14 +455,13 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # dominance: block altcoins only if dominance too high; allow BTC trades always
-    if symbol != "BTCUSDT":
-        if btc_dom is not None and btc_dom > BTC_DOMINANCE_MAX:
-            print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOMINANCE_MAX}% (blocking altcoins only).")
-            skipped_signals += 1
-            return False
-    if btc_dom is None:
-        print("⚠️ Could not fetch BTC dominance — proceeding but consider checking connectivity.")
+# if symbol != "BTCUSDT":
+#     if btc_dom is not None and btc_dom > BTC_DOMINANCE_MAX:
+#         print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOMINANCE_MAX}% (blocking altcoins only).")
+#         skipped_signals += 1
+#         return False
+# if btc_dom is None:
+#     print("⚠️ Could not fetch BTC dominance — proceeding but consider checking connectivity.")
 
     # determine BTC risk multiplier
     if btc_dir == "BULL":
