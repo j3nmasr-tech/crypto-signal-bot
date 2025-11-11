@@ -355,7 +355,7 @@ def btc_adx_4h_ok(min_adx=BTC_ADX_MIN, period=14):
     return float(adx)
 
 # ===== BTC DIRECTION & DOMINANCE =====
-COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+COINPAPRIKA_GLOBAL = "https://api.coinpaprika.com/v1/global"
 
 def btc_direction_1h():
     try:
