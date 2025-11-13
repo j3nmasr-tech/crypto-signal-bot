@@ -480,9 +480,15 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # ===== ADX FILTER (Blocks ALTS only) =====
-    BTC_ADX_MIN = 18.0
-    if symbol != "BTCUSDT":  # allow BTC regardless
+    # ===== ADX FILTER (Blocks minor ALTS only, allows BTC & ETH) =====
+    if symbol == "BTCUSDT":
+        BTC_ADX_MIN = 15.0  # BTC allowed earlier
+    elif symbol == "ETHUSDT":
+        BTC_ADX_MIN = 16.0  # ETH slightly stricter
+    else:
+        BTC_ADX_MIN = 18.0  # other alts need stronger BTC trend
+
+    if symbol not in ["BTCUSDT", "ETHUSDT"]:  # block weak trend for smaller alts
         if btc_adx is None:
             print(f"Skipping {symbol}: BTC ADX unavailable.")
             skipped_signals += 1
