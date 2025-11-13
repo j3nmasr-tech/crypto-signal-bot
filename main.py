@@ -51,7 +51,7 @@ TOP_SYMBOLS = 10
 BYBIT_KLINES = "https://api.bybit.com/v5/market/kline"
 BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
 FNG_API        = "https://api.alternative.me/fng/?limit=1"
-COINPAPRIKA_GLOBAL = "https://api.coinpaprika.com/v1/global"
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 
 LOG_CSV = "./sirts_v10_scalp_top10.csv"
 
@@ -355,7 +355,7 @@ def btc_adx_4h_ok(min_adx=BTC_ADX_MIN, period=14):
     return float(adx)
 
 # ===== BTC DIRECTION & DOMINANCE =====
-COINPAPRIKA_GLOBAL = "https://api.coinpaprika.com/v1/global"
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 
 def btc_direction_1h():
     try:
@@ -381,21 +381,15 @@ def get_btc_dominance():
         return _last_dom
 
     try:
-        r = requests.get(COINPAPRIKA_GLOBAL, timeout=8)
+        r = requests.get(COINGECKO_GLOBAL, timeout=8)
         data = r.json()
 
-        # CoinPaprika uses this key exactly
-        dom = data.get("bitcoin_dominance_percentage")
+        # CoinGecko format: data -> market_cap_percentage -> btc
+        dom = data.get("data", {}).get("market_cap_percentage", {}).get("btc")
 
-        # If key missing or null → fallback
+        # If missing or invalid, skip update
         if dom is None:
-            for k, v in data.items():
-                if "dominance" in k.lower():
-                    dom = v
-                    break
-
-        if dom is None:
-            print("⚠️ BTC dominance missing in response.")
+            print("⚠️ BTC dominance missing in CoinGecko response.")
             return _last_dom
 
         dom = float(dom)
@@ -404,9 +398,9 @@ def get_btc_dominance():
         return _last_dom
 
     except Exception as e:
-        print("⚠️ Dominance fetch error:", e)
-        return _last_dom  # return last known, do NOT break bot
-
+        print("⚠️ Dominance fetch error (CoinGecko):", e)
+        return _last_dom  # fallback to last known, do NOT break bot
+        
 def btc_volatility_spike():
     df = get_klines("BTCUSDT", "5m", 3)
     if df is None or len(df) < 3:
