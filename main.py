@@ -631,15 +631,48 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    header = (f"✅ {chosen_dir} {symbol}\n"
-              f"💵 Entry: {entry}\n"
-              f"🎯 TP1:{tp1} TP2:{tp2} TP3:{tp3}\n"
-              f"🛑 SL: {sl}\n"
-              f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
-              f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}\n"
-              f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: {btc_dom:.2f}%" if btc_dom is not None else
-              f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: unknown"
-             )
+    # 方向标识
+    direction_emoji = "🟢 做多" if chosen_dir == "BUY" else "🔴 做空"
+    direction_label = "买入" if chosen_dir == "BUY" else "卖出"
+
+    # 市场情绪汉化
+    sentiment_cn = {"fear": "恐慌", "greed": "贪婪", "neutral": "中性"}.get(sentiment, sentiment)
+
+    # BTC 方向汉化
+    btc_dir_cn = {"BULL": "牛市", "BEAR": "熊市", "MIXED": "混合"}.get(btc_dir, btc_dir)
+
+    header = (
+        f"{'═'*35}\n"
+        f"🎯 【交易信号】 {direction_emoji}\n"
+        f"{'═'*35}\n\n"
+        f"📊 交易对：{symbol}\n"
+        f"📍 方向：{direction_label} ({chosen_dir})\n"
+        f"{'─'*35}\n\n"
+        f"💰 【价格信息】\n"
+        f"   入场价：{entry:.8f}\n"
+        f"   止损价：{sl:.8f}\n\n"
+        f"🎯 【目标价位】\n"
+        f"   TP1：{tp1:.8f}\n"
+        f"   TP2：{tp2:.8f}\n"
+        f"   TP3：{tp3:.8f}\n"
+        f"{'─'*35}\n\n"
+        f"💼 【仓位信息】\n"
+        f"   数量：{units:.4f}\n"
+        f"   保证金：${margin:.2f}\n"
+        f"   风险敞口：${exposure:.2f}\n"
+        f"{'─'*35}\n\n"
+        f"📈 【风险分析】\n"
+        f"   风险比例：{risk_used*100:.2f}%\n"
+        f"   信心度：{confidence_pct:.1f}%\n"
+        f"   市场情绪：{sentiment_cn}\n"
+        f"{'─'*35}\n\n"
+        f"🌐 【BTC 市场状态】\n"
+        f"   趋势：{btc_dir_cn}\n"
+        f"   ADX (4H)：{btc_adx:.2f}\n"
+        f"   主导率：{btc_dom:.2f}%\n" if btc_dom is not None else
+        f"   主导率：未知\n"
+        f"{'═'*35}"
+    )
 
     send_message(header)
 
@@ -693,7 +726,16 @@ def check_trades():
             if not t["tp1_taken"] and p >= t["tp1"]:
                 t["tp1_taken"] = True
                 t["sl"] = t["entry"]
-                send_message(f"🎯 {t['s']} TP1 Hit {p} — SL moved to breakeven.")
+                msg = (
+                    f"{'─'*35}\n"
+                    f"🎯 【目标达成】TP1\n"
+                    f"{'─'*35}\n"
+                    f"📊 交易对：{t['s']}\n"
+                    f"💰 当前价格：{p:.8f}\n"
+                    f"✅ 止损已移至保本价\n"
+                    f"{'─'*35}"
+                )
+                send_message(msg)
                 STATS["by_side"]["BUY"]["hit"] += 1
                 STATS["by_tf"][t["entry_tf"]]["hit"] += 1
                 signals_hit_total += 1
@@ -702,7 +744,15 @@ def check_trades():
                 continue
             if t["tp1_taken"] and not t["tp2_taken"] and p >= t["tp2"]:
                 t["tp2_taken"] = True
-                send_message(f"🎯 {t['s']} TP2 Hit {p}")
+                msg = (
+                    f"{'─'*35}\n"
+                    f"🎯 【目标达成】TP2\n"
+                    f"{'─'*35}\n"
+                    f"📊 交易对：{t['s']}\n"
+                    f"💰 当前价格：{p:.8f}\n"
+                    f"{'─'*35}"
+                )
+                send_message(msg)
                 STATS["by_side"]["BUY"]["hit"] += 1
                 STATS["by_tf"][t["entry_tf"]]["hit"] += 1
                 signals_hit_total += 1
@@ -712,7 +762,16 @@ def check_trades():
             if t["tp2_taken"] and not t["tp3_taken"] and p >= t["tp3"]:
                 t["tp3_taken"] = True
                 t["st"] = "closed"
-                send_message(f"🏁 {t['s']} TP3 Hit {p} — Trade closed.")
+                msg = (
+                    f"{'─'*35}\n"
+                    f"🏁 【交易完成】TP3\n"
+                    f"{'─'*35}\n"
+                    f"📊 交易对：{t['s']}\n"
+                    f"💰 当前价格：{p:.8f}\n"
+                    f"✅ 交易已关闭\n"
+                    f"{'─'*35}"
+                )
+                send_message(msg)
                 STATS["by_side"]["BUY"]["hit"] += 1
                 STATS["by_tf"][t["entry_tf"]]["hit"] += 1
                 signals_hit_total += 1
@@ -726,7 +785,15 @@ def check_trades():
                     signals_breakeven += 1
                     STATS["by_side"]["BUY"]["breakeven"] += 1
                     STATS["by_tf"][t["entry_tf"]]["breakeven"] += 1
-                    send_message(f"⚖️ {t['s']} Breakeven SL Hit {p}")
+                    msg = (
+                        f"{'─'*35}\n"
+                        f"⚖️ 【保本止损】\n"
+                        f"{'─'*35}\n"
+                        f"📊 交易对：{t['s']}\n"
+                        f"💰 当前价格：{p:.8f}\n"
+                        f"{'─'*35}"
+                    )
+                    send_message(msg)
                     last_trade_result[t["s"]] = "breakeven"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
                     log_trade_close(t)
@@ -735,7 +802,15 @@ def check_trades():
                     signals_fail_total += 1
                     STATS["by_side"]["BUY"]["fail"] += 1
                     STATS["by_tf"][t["entry_tf"]]["fail"] += 1
-                    send_message(f"❌ {t['s']} SL Hit {p}")
+                    msg = (
+                        f"{'─'*35}\n"
+                        f"❌ 【止损触发】\n"
+                        f"{'─'*35}\n"
+                        f"📊 交易对：{t['s']}\n"
+                        f"💰 当前价格：{p:.8f}\n"
+                        f"{'─'*35}"
+                    )
+                    send_message(msg)
                     last_trade_result[t["s"]] = "loss"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_FAIL
                     log_trade_close(t)
@@ -743,7 +818,16 @@ def check_trades():
             if not t["tp1_taken"] and p <= t["tp1"]:
                 t["tp1_taken"] = True
                 t["sl"] = t["entry"]
-                send_message(f"🎯 {t['s']} TP1 Hit {p} — SL moved to breakeven.")
+                msg = (
+                    f"{'─'*35}\n"
+                    f"🎯 【目标达成】TP1\n"
+                    f"{'─'*35}\n"
+                    f"📊 交易对：{t['s']}\n"
+                    f"💰 当前价格：{p:.8f}\n"
+                    f"✅ 止损已移至保本价\n"
+                    f"{'─'*35}"
+                )
+                send_message(msg)
                 STATS["by_side"]["SELL"]["hit"] += 1
                 STATS["by_tf"][t["entry_tf"]]["hit"] += 1
                 signals_hit_total += 1
@@ -752,7 +836,15 @@ def check_trades():
                 continue
             if t["tp1_taken"] and not t["tp2_taken"] and p <= t["tp2"]:
                 t["tp2_taken"] = True
-                send_message(f"🎯 {t['s']} TP2 Hit {p}")
+                msg = (
+                    f"{'─'*35}\n"
+                    f"🎯 【目标达成】TP2\n"
+                    f"{'─'*35}\n"
+                    f"📊 交易对：{t['s']}\n"
+                    f"💰 当前价格：{p:.8f}\n"
+                    f"{'─'*35}"
+                )
+                send_message(msg)
                 STATS["by_side"]["SELL"]["hit"] += 1
                 STATS["by_tf"][t["entry_tf"]]["hit"] += 1
                 signals_hit_total += 1
@@ -762,7 +854,16 @@ def check_trades():
             if t["tp2_taken"] and not t["tp3_taken"] and p <= t["tp3"]:
                 t["tp3_taken"] = True
                 t["st"] = "closed"
-                send_message(f"🏁 {t['s']} TP3 Hit {p} — Trade closed.")
+                msg = (
+                    f"{'─'*35}\n"
+                    f"🏁 【交易完成】TP3\n"
+                    f"{'─'*35}\n"
+                    f"📊 交易对：{t['s']}\n"
+                    f"💰 当前价格：{p:.8f}\n"
+                    f"✅ 交易已关闭\n"
+                    f"{'─'*35}"
+                )
+                send_message(msg)
                 STATS["by_side"]["SELL"]["hit"] += 1
                 STATS["by_tf"][t["entry_tf"]]["hit"] += 1
                 signals_hit_total += 1
@@ -776,7 +877,15 @@ def check_trades():
                     signals_breakeven += 1
                     STATS["by_side"]["SELL"]["breakeven"] += 1
                     STATS["by_tf"][t["entry_tf"]]["breakeven"] += 1
-                    send_message(f"⚖️ {t['s']} Breakeven SL Hit {p}")
+                    msg = (
+                        f"{'─'*35}\n"
+                        f"⚖️ 【保本止损】\n"
+                        f"{'─'*35}\n"
+                        f"📊 交易对：{t['s']}\n"
+                        f"💰 当前价格：{p:.8f}\n"
+                        f"{'─'*35}"
+                    )
+                    send_message(msg)
                     last_trade_result[t["s"]] = "breakeven"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_SUCCESS
                     log_trade_close(t)
@@ -785,7 +894,15 @@ def check_trades():
                     signals_fail_total += 1
                     STATS["by_side"]["SELL"]["fail"] += 1
                     STATS["by_tf"][t["entry_tf"]]["fail"] += 1
-                    send_message(f"❌ {t['s']} SL Hit {p}")
+                    msg = (
+                        f"{'─'*35}\n"
+                        f"❌ 【止损触发】\n"
+                        f"{'─'*35}\n"
+                        f"📊 交易对：{t['s']}\n"
+                        f"💰 当前价格：{p:.8f}\n"
+                        f"{'─'*35}"
+                    )
+                    send_message(msg)
                     last_trade_result[t["s"]] = "loss"
                     last_trade_time[t["s"]] = time.time() + COOLDOWN_TIME_FAIL
                     log_trade_close(t)
@@ -800,7 +917,15 @@ def check_trades():
 
 # ===== HEARTBEAT & SUMMARY =====
 def heartbeat():
-    send_message(f"💓 Heartbeat OK {datetime.utcnow().strftime('%H:%M UTC')}")
+    msg = (
+        f"{'═'*35}\n"
+        f"💓 【系统心跳】\n"
+        f"{'═'*35}\n"
+        f"⏰ 时间：{datetime.utcnow().strftime('%H:%M UTC')}\n"
+        f"✅ 系统运行正常\n"
+        f"{'═'*35}"
+    )
+    send_message(msg)
     print("💓 Heartbeat sent.")
 
 def summary():
@@ -809,13 +934,41 @@ def summary():
     fails = signals_fail_total
     breakev = signals_breakeven
     acc   = (hits / total * 100) if total > 0 else 0.0
-    send_message(f"📊 Daily Summary\nSignals Sent: {total}\nSignals Checked: {total_checked_signals}\nSignals Skipped: {skipped_signals}\n✅ Hits: {hits}\n⚖️ Breakeven: {breakev}\n❌ Fails: {fails}\n🎯 Accuracy: {acc:.1f}%")
+
+    msg = (
+        f"{'═'*35}\n"
+        f"📊 【每日统计报告】\n"
+        f"{'═'*35}\n\n"
+        f"📈 【信号统计】\n"
+        f"   发送信号：{total}\n"
+        f"   检查信号：{total_checked_signals}\n"
+        f"   跳过信号：{skipped_signals}\n"
+        f"{'─'*35}\n\n"
+        f"📊 【交易结果】\n"
+        f"   ✅ 盈利：{hits}\n"
+        f"   ⚖️ 保本：{breakev}\n"
+        f"   ❌ 止损：{fails}\n"
+        f"{'─'*35}\n\n"
+        f"🎯 【胜率】{acc:.1f}%\n"
+        f"{'═'*35}"
+    )
+    send_message(msg)
     print(f"📊 Daily Summary. Accuracy: {acc:.1f}%")
     print("Stats by side:", STATS["by_side"])
     print("Stats by TF:", STATS["by_tf"])
     # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 Scalp Top-10 (BTC-Aware Pro) deployed — Aggressive defaults active.")
+startup_msg = (
+    f"{'═'*35}\n"
+    f"🚀 【系统启动】\n"
+    f"{'═'*35}\n"
+    f"📌 SIRTS v10 加密货币信号机器人\n"
+    f"📌 Scalp Top-10 (BTC感知版)\n"
+    f"✅ 系统已部署并运行\n"
+    f"⚙️ 激进模式已激活\n"
+    f"{'═'*35}"
+)
+send_message(startup_msg)
 print("✅ SIRTS v10 Scalp Top-10 deployed.")
 
 try:
@@ -836,7 +989,16 @@ while True:
         # BTC volatility spike check
         if btc_volatility_spike():
             volatility_pause_until = time.time() + VOLATILITY_PAUSE
-            send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
+            msg = (
+                f"{'═'*35}\n"
+                f"⚠️ 【市场波动警告】\n"
+                f"{'═'*35}\n"
+                f"🌊 检测到 BTC 剧烈波动\n"
+                f"⏸️ 暂停信号发送\n"
+                f"⏰ 暂停时长：{VOLATILITY_PAUSE//60} 分钟\n"
+                f"{'═'*35}"
+            )
+            send_message(msg)
             print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
             continue
 
