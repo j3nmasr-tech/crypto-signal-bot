@@ -492,17 +492,17 @@ def analyze_symbol(symbol):
             skipped_signals += 1
             return False
 
-    # ===== DOMINANCE FILTER (Blocks ALTS only) =====
-    BTC_DOM_MAX = 55.0
-    if symbol != "BTCUSDT":  # allow BTC signals no matter what
-        if btc_dom is None:
-            print(f"Skipping {symbol}: BTC dominance unavailable.")
-            skipped_signals += 1
-            return False
-        if btc_dom > BTC_DOM_MAX:
-            print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOM_MAX}% (alts suppressed).")
-            skipped_signals += 1
-            return False
+# ===== DOMINANCE FILTER (Blocks ALTS only) =====
+BTC_DOM_MAX = 55.0
+if symbol not in ["BTCUSDT", "ETHUSDT"]:  # allow BTC & ETH no matter what
+    if btc_dom is None:
+        print(f"Skipping {symbol}: BTC dominance unavailable.")
+        skipped_signals += 1
+        return False
+    if btc_dom > BTC_DOM_MAX:
+        print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOM_MAX}% (alts suppressed).")
+        skipped_signals += 1
+        return False
 
     # ===== BTC RISK MULTIPLIER BASED ON DIRECTION =====
     if btc_dir == "BULL":
