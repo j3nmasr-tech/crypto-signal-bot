@@ -141,10 +141,9 @@ def safe_get_json(url, params=None, timeout=5, retries=2):
             return None
 
 # ===== SYMBOLS =====
-def get_top_symbols(n=10):
-    fixed = ["BTCUSDT","ETHUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
-             "SOLUSDT","DOGEUSDT","DOTUSDT","LTCUSDT","LINKUSDT"]
-    return fixed[:n]
+def get_top_symbols(n=None):
+    # Force bot to ONLY scan these 3 pairs
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
 def get_24h_quote_volume(symbol):
     symbol = sanitize_symbol(symbol)
@@ -849,15 +848,13 @@ def summary():
     
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 Scalp Top-10 (BTC-Aware Pro) deployed — Aggressive defaults active.")
-print("✅ SIRTS v10 Scalp Top-10 deployed.")
 
-try:
-    SYMBOLS = get_top_symbols(TOP_SYMBOLS)
-    print(f"Monitoring {len(SYMBOLS)} symbols (Top {TOP_SYMBOLS}).")
-except Exception as e:
-    SYMBOLS = get_top_symbols(10)
-    print("Warning retrieving top symbols, defaulting to fixed Top 10.")
+send_message("✅ Scalp Bot deployed — scanning BTC, ETH, SOL only.")
+print("✅ Scalp Bot deployed — scanning BTC, ETH, SOL only.")
+
+# Force symbol list (no Top-10 logic)
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+print("Monitoring BTC, ETH, SOL only.")
 # ===== MAIN LOOP =====
 while True:
     try:
