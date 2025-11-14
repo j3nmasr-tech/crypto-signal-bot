@@ -422,9 +422,10 @@ def log_trade_close(trade):
             ])
     except Exception as e:
         print("log_trade_close error:", e)
-        # ===== ANALYSIS & SIGNAL GENERATION =====
+# ===== ANALYSIS & SIGNAL GENERATION =====
 def current_total_exposure():
     return sum([t.get("exposure", 0) for t in open_trades if t.get("st") == "open"])
+
 
 def analyze_symbol(symbol):
     global total_checked_signals, skipped_signals, signals_sent_total
@@ -464,43 +465,48 @@ def analyze_symbol(symbol):
     btc_dom = get_btc_dominance()
     btc_adx = btc_adx_4h_ok()
 
-# ===== SEMI-STRICT TF AGREEMENT (BEST MODE) =====
-def get_tf_bias(symbol, tf):
-    df = get_klines(symbol, tf, 150)
-    if df is None or len(df) < 50:
-        return None
-    b = smc_bias(df)
-    return "bull" if b == "bull" else "bear"
+    if btc_dir is None:
+        print(f"Skipping {symbol}: BTC direction unclear.")
+        skipped_signals += 1
+        return False
 
-bias_15m = get_tf_bias(symbol, "15m")
-bias_30m = get_tf_bias(symbol, "30m")
-bias_1h  = get_tf_bias(symbol, "1h")
+    # ============================================================
+    # SEMI-STRICT TF AGREEMENT (BEST MODE)
+    # ============================================================
 
-# Missing bias → skip
-if None in (bias_15m, bias_30m, bias_1h):
-    print(f"Skipping {symbol}: TF bias missing (15m/30m/1H).")
-    skipped_signals += 1
-    return False
+    def get_tf_bias(symbol, tf):
+        df = get_klines(symbol, tf, 150)
+        if df is None or len(df) < 50:
+            return None
+        b = smc_bias(df)
+        return "bull" if b == "bull" else "bear"
 
-# ===== STRONG RULE: 15m must match 30m =====
-if bias_15m != bias_30m:
-    print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
-    skipped_signals += 1
-    return False
+    bias_15m = get_tf_bias(symbol, "15m")
+    bias_30m = get_tf_bias(symbol, "30m")
+    bias_1h  = get_tf_bias(symbol, "1h")
 
-# ===== SOFT RULE: 1H must NOT be opposite of 15m =====
-# Allowed:
-#   15m= bull, 1H = bull → OK
-#   15m= bull, 1H = neutral → OK
-#   15m= bear, 1H = neutral → OK
-# Block ONLY when 1H is strong opposite:
-if bias_1h != bias_15m:
-    print(f"Soft block: 1H={bias_1h} conflicts with 15m={bias_15m}. Skipping {symbol}.")
-    skipped_signals += 1
-    return False
+    # Missing bias → skip
+    if None in (bias_15m, bias_30m, bias_1h):
+        print(f"Skipping {symbol}: TF bias missing (15m/30m/1H).")
+        skipped_signals += 1
+        return False
 
-print(f"TF OK {symbol}: 15m={bias_15m}, 30m={bias_30m}, 1H={bias_1h}")
+    # STRONG RULE: 15m must match 30m
+    if bias_15m != bias_30m:
+        print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
+        skipped_signals += 1
+        return False
 
+    # SOFT RULE: 1H must NOT be opposite of 15m
+    if bias_1h != bias_15m:
+        print(f"Soft block: 1H={bias_1h} conflicts with 15m={bias_15m}. Skipping {symbol}.")
+        skipped_signals += 1
+        return False
+
+    print(f"TF OK {symbol}: 15m={bias_15m}, 30m={bias_30m}, 1H={bias_1h}")
+
+    # ===== Continue with your normal signal generation here =====
+    # ...
     # ===== If BTC direction is unknown → block everything (for safety) =====
     if btc_dir is None:
         print(f"Skipping {symbol}: BTC direction unclear.")
