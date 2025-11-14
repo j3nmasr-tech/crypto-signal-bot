@@ -42,10 +42,10 @@ WEIGHT_TURTLE = 0.25
 WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
-MIN_TF_SCORE  = 55          # slightly easier trend threshold (faster entries)
+MIN_TF_SCORE  = 50          # slightly easier trend threshold (faster entries)
 CONF_MIN_TFS  = 1           # ✅ only 1 timeframe confirmation (main one, e.g. 15m)
-CONFIDENCE_MIN = 60.0       # keep as is for good quality
-MIN_QUOTE_VOLUME = 500_000.0  # allows slightly smaller alts
+CONFIDENCE_MIN = 55.0       # keep as is for good quality
+MIN_QUOTE_VOLUME = 300_000.0  # allows slightly smaller alts
 TOP_SYMBOLS = 10            # keep same
 
 BYBIT_KLINES = "https://api.bybit.com/v5/market/kline"
@@ -55,7 +55,7 @@ COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 
 LOG_CSV = "./sirts_v10_scalp_top10.csv"
 
-BTC_DOMINANCE_MAX = 55.0
+BTC_DOMINANCE_MAX = 58.0
 BTC_RISK_MULT_BULL  = 1.00
 BTC_RISK_MULT_BEAR  = 0.70
 BTC_RISK_MULT_MIXED = 0.85
