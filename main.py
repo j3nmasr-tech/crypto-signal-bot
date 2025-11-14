@@ -464,37 +464,42 @@ def analyze_symbol(symbol):
     btc_dom = get_btc_dominance()
     btc_adx = btc_adx_4h_ok()
 
-    # ===== STRICT TF AGREEMENT (15m + 30m + 1H) =====
-    def get_tf_bias(symbol, tf):
-        df = get_klines(symbol, tf, 150)
-        if df is None or len(df) < 50:
-            return None
-        b = smc_bias(df)
-        return "bull" if b == "bull" else "bear"
+# ===== SEMI-STRICT TF AGREEMENT (BEST MODE) =====
+def get_tf_bias(symbol, tf):
+    df = get_klines(symbol, tf, 150)
+    if df is None or len(df) < 50:
+        return None
+    b = smc_bias(df)
+    return "bull" if b == "bull" else "bear"
 
-    bias_15m = get_tf_bias(symbol, "15m")
-    bias_30m = get_tf_bias(symbol, "30m")
-    bias_1h  = get_tf_bias(symbol, "1h")
+bias_15m = get_tf_bias(symbol, "15m")
+bias_30m = get_tf_bias(symbol, "30m")
+bias_1h  = get_tf_bias(symbol, "1h")
 
-    # Missing bias → can't trade safely
-    if None in (bias_15m, bias_30m, bias_1h):
-        print(f"Skipping {symbol}: TF agreement missing (15m/30m/1H).")
-        skipped_signals += 1
-        return False
+# Missing bias → skip
+if None in (bias_15m, bias_30m, bias_1h):
+    print(f"Skipping {symbol}: TF bias missing (15m/30m/1H).")
+    skipped_signals += 1
+    return False
 
-    # 15m must match 30m
-    if bias_15m != bias_30m:
-        print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
-        skipped_signals += 1
-        return False
+# ===== STRONG RULE: 15m must match 30m =====
+if bias_15m != bias_30m:
+    print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
+    skipped_signals += 1
+    return False
 
-    # 15m must match 1H
-    if bias_15m != bias_1h:
-        print(f"Skipping {symbol}: lower TF={bias_15m} disagrees with 1H={bias_1h}.")
-        skipped_signals += 1
-        return False
+# ===== SOFT RULE: 1H must NOT be opposite of 15m =====
+# Allowed:
+#   15m= bull, 1H = bull → OK
+#   15m= bull, 1H = neutral → OK
+#   15m= bear, 1H = neutral → OK
+# Block ONLY when 1H is strong opposite:
+if bias_1h != bias_15m:
+    print(f"Soft block: 1H={bias_1h} conflicts with 15m={bias_15m}. Skipping {symbol}.")
+    skipped_signals += 1
+    return False
 
-    print(f"TF AGREEMENT OK for {symbol}: 15m={bias_15m}, 30m={bias_30m}, 1H={bias_1h}")
+print(f"TF OK {symbol}: 15m={bias_15m}, 30m={bias_30m}, 1H={bias_1h}")
 
     # ===== If BTC direction is unknown → block everything (for safety) =====
     if btc_dir is None:
