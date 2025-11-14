@@ -43,7 +43,7 @@ WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
 MIN_TF_SCORE  = 55          # slightly easier trend threshold (faster entries)
-CONF_MIN_TFS  = 1           # ✅ only 1 timeframe confirmation (main one, e.g. 15m)
+CONF_MIN_TFS  = 2           # ✅ only 1 timeframe confirmation (main one, e.g. 15m)
 CONFIDENCE_MIN = 60.0       # keep as is for good quality
 MIN_QUOTE_VOLUME = 500_000.0  # allows slightly smaller alts
 TOP_SYMBOLS = 10            # keep same
@@ -459,7 +459,7 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    vol24 = get_24h_quote_volume(symbol)
+        vol24 = get_24h_quote_volume(symbol)
     if vol24 < MIN_QUOTE_VOLUME:
         skipped_signals += 1
         return False
@@ -470,9 +470,38 @@ def analyze_symbol(symbol):
         return False
 
     # ===== BTC MARKET STATE =====
-    btc_dir = btc_direction_1h()       # only 1H direction used
+    btc_dir = btc_direction_1h()
     btc_dom = get_btc_dominance()
-    btc_adx = btc_adx_4h_ok()          # returns numeric ADX value
+    btc_adx = btc_adx_4h_ok()
+
+    # ===== STRICT TF AGREEMENT (15m + 30m + 4H must match) =====
+    def get_tf_bias(symbol, tf):
+        df = get_klines(symbol, tf, 150)
+        if df is None or len(df) < 50:
+            return None
+        b = smc_bias(df)
+        return "bull" if b == "bull" else "bear"
+
+    bias_15m = get_tf_bias(symbol, "15m")
+    bias_30m = get_tf_bias(symbol, "30m")
+    bias_4h  = get_tf_bias(symbol, "4h")
+
+    if None in [bias_15m, bias_30m, bias_4h]:
+        print(f"Skipping {symbol}: TF agreement missing.")
+        skipped_signals += 1
+        return False
+
+    if bias_15m != bias_30m:
+        print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
+        skipped_signals += 1
+        return False
+
+    if bias_15m != bias_4h:
+        print(f"Skipping {symbol}: lower TF={bias_15m} disagrees with 4H={bias_4h}.")
+        skipped_signals += 1
+        return False
+
+    print(f"TF AGREEMENT OK for {symbol}: 15m={bias_15m}, 30m={bias_30m}, 4H={bias_4h}")
 
     # If BTC direction is unknown → block everything (for safety)
     if btc_dir is None:
