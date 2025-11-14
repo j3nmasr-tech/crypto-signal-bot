@@ -43,7 +43,7 @@ WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
 MIN_TF_SCORE  = 55          # slightly easier trend threshold (faster entries)
-CONF_MIN_TFS  = 2           # ✅ only 1 timeframe confirmation (main one, e.g. 15m)
+CONF_MIN_TFS  = 1           # ✅ only 1 timeframe confirmation (main one, e.g. 15m)
 CONFIDENCE_MIN = 60.0       # keep as is for good quality
 MIN_QUOTE_VOLUME = 500_000.0  # allows slightly smaller alts
 TOP_SYMBOLS = 10            # keep same
@@ -237,24 +237,6 @@ def volume_ok(df):
     current = df["volume"].iloc[-1]
     return current > ma * 1.3
 
-# ===== DOUBLE TIMEFRAME CONFIRMATION =====
-def get_direction_from_ma(df, span=20):
-    try:
-        ma = df["close"].ewm(span=span).mean().iloc[-1]
-        return "BUY" if df["close"].iloc[-1] > ma else "SELL"
-    except Exception:
-        return None
-
-def tf_agree(symbol, tf_low, tf_high):
-    df_low = get_klines(symbol, tf_low, 100)
-    df_high = get_klines(symbol, tf_high, 100)
-    if df_low is None or df_high is None or len(df_low) < 30 or len(df_high) < 30:
-        return not STRICT_TF_AGREE
-    dir_low = get_direction_from_ma(df_low)
-    dir_high = get_direction_from_ma(df_high)
-    if dir_low is None or dir_high is None:
-        return not STRICT_TF_AGREE
-    return dir_low == dir_high
 
 # ===== ATR & POSITION SIZING =====
 def get_atr(symbol, period=14):
@@ -445,25 +427,33 @@ def current_total_exposure():
     return sum([t.get("exposure", 0) for t in open_trades if t.get("st") == "open"])
 
 def analyze_symbol(symbol):
-    global total_checked_signals, skipped_signals, signals_sent_total, last_trade_time, volatility_pause_until, STATS, recent_signals
+    global total_checked_signals, skipped_signals, signals_sent_total
+    global last_trade_time, volatility_pause_until, STATS, recent_signals
+
     total_checked_signals += 1
     now = time.time()
-    if time.time() < volatility_pause_until:
+
+    # ===== VOLATILITY PAUSE =====
+    if now < volatility_pause_until:
         return False
 
+    # ===== BASIC SYMBOL VALIDATION =====
     if not symbol or not isinstance(symbol, str):
         skipped_signals += 1
         return False
 
+    # ===== SYMBOL BLACKLIST =====
     if symbol in SYMBOL_BLACKLIST:
         skipped_signals += 1
         return False
 
-        vol24 = get_24h_quote_volume(symbol)
+    # ===== 24H VOLUME FILTER =====
+    vol24 = get_24h_quote_volume(symbol)
     if vol24 < MIN_QUOTE_VOLUME:
         skipped_signals += 1
         return False
 
+    # ===== COOLDOWN CHECK =====
     if last_trade_time.get(symbol, 0) > now:
         print(f"Cooldown active for {symbol}, skipping until {datetime.fromtimestamp(last_trade_time.get(symbol))}")
         skipped_signals += 1
@@ -474,7 +464,7 @@ def analyze_symbol(symbol):
     btc_dom = get_btc_dominance()
     btc_adx = btc_adx_4h_ok()
 
-    # ===== STRICT TF AGREEMENT (15m + 30m + 4H must match) =====
+    # ===== STRICT TF AGREEMENT (15m + 30m + 1H) =====
     def get_tf_bias(symbol, tf):
         df = get_klines(symbol, tf, 150)
         if df is None or len(df) < 50:
@@ -484,26 +474,29 @@ def analyze_symbol(symbol):
 
     bias_15m = get_tf_bias(symbol, "15m")
     bias_30m = get_tf_bias(symbol, "30m")
-    bias_4h  = get_tf_bias(symbol, "4h")
+    bias_1h  = get_tf_bias(symbol, "1h")
 
-    if None in [bias_15m, bias_30m, bias_4h]:
-        print(f"Skipping {symbol}: TF agreement missing.")
+    # Missing bias → can't trade safely
+    if None in (bias_15m, bias_30m, bias_1h):
+        print(f"Skipping {symbol}: TF agreement missing (15m/30m/1H).")
         skipped_signals += 1
         return False
 
+    # 15m must match 30m
     if bias_15m != bias_30m:
         print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
         skipped_signals += 1
         return False
 
-    if bias_15m != bias_4h:
-        print(f"Skipping {symbol}: lower TF={bias_15m} disagrees with 4H={bias_4h}.")
+    # 15m must match 1H
+    if bias_15m != bias_1h:
+        print(f"Skipping {symbol}: lower TF={bias_15m} disagrees with 1H={bias_1h}.")
         skipped_signals += 1
         return False
 
-    print(f"TF AGREEMENT OK for {symbol}: 15m={bias_15m}, 30m={bias_30m}, 4H={bias_4h}")
+    print(f"TF AGREEMENT OK for {symbol}: 15m={bias_15m}, 30m={bias_30m}, 1H={bias_1h}")
 
-    # If BTC direction is unknown → block everything (for safety)
+    # ===== If BTC direction is unknown → block everything (for safety) =====
     if btc_dir is None:
         print(f"Skipping {symbol}: BTC direction unclear.")
         skipped_signals += 1
