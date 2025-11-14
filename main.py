@@ -42,9 +42,9 @@ WEIGHT_TURTLE = 0.25
 WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
-MIN_TF_SCORE  = 50          # slightly easier trend threshold (faster entries)
+MIN_TF_SCORE  = 60.0          # slightly easier trend threshold (faster entries)
 CONF_MIN_TFS  = 1           # ✅ only 1 timeframe confirmation (main one, e.g. 15m)
-CONFIDENCE_MIN = 55.0       # keep as is for good quality
+CONFIDENCE_MIN = 60.0       # keep as is for good quality
 MIN_QUOTE_VOLUME = 300_000.0  # allows slightly smaller alts
 TOP_SYMBOLS = 10            # keep same
 
