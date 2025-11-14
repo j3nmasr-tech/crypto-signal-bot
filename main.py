@@ -846,7 +846,8 @@ def summary():
     print(f"📊 Daily Summary. Accuracy: {acc:.1f}%")
     print("Stats by side:", STATS["by_side"])
     print("Stats by TF:", STATS["by_tf"])
-    # ===== STARTUP =====
+    
+# ===== STARTUP =====
 init_csv()
 send_message("✅ SIRTS v10 Scalp Top-10 (BTC-Aware Pro) deployed — Aggressive defaults active.")
 print("✅ SIRTS v10 Scalp Top-10 deployed.")
@@ -857,7 +858,6 @@ try:
 except Exception as e:
     SYMBOLS = get_top_symbols(10)
     print("Warning retrieving top symbols, defaulting to fixed Top 10.")
-
 # ===== MAIN LOOP =====
 while True:
     try:
