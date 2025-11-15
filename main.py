@@ -534,7 +534,7 @@ def analyze_symbol(symbol):
         else:
             btc_risk_mult = BTC_RISK_MULT_MIXED
 
-        # ===== MULTI-TF SCORING (no tf_agree) =====
+        # ===== MULTI-TF SCORING =====
         tf_confirmations = 0
         chosen_dir = None
         chosen_entry = None
@@ -596,27 +596,22 @@ def analyze_symbol(symbol):
 
         print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations. Breakdown: {breakdown_per_tf}")
 
-        # require at least CONF_MIN_TFS confirmations
         if not (tf_confirmations >= CONF_MIN_TFS and chosen_dir and chosen_entry is not None):
             return False
 
-        # compute confidence
         confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
         confidence_pct = max(0.0, min(100.0, confidence_pct))
 
-        # small safety fallback
         if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
             print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
             skipped_signals += 1
             return False
 
-        # global open-trade / exposure limits
         if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
             print(f"Skipping {symbol}: max open trades reached ({MAX_OPEN_TRADES}).")
             skipped_signals += 1
             return False
 
-        # dedupe on signature
         sig = (symbol, chosen_dir, round(chosen_entry, 6))
         if recent_signals.get(sig, 0) + RECENT_SIGNAL_SIGNATURE_EXPIRE > time.time():
             print(f"Skipping {symbol}: duplicate recent signal {sig}.")
@@ -647,13 +642,11 @@ def analyze_symbol(symbol):
             skipped_signals += 1
             return False
 
-        # ===== EXPOSURE SAFETY CHECK =====
         if exposure > CAPITAL * MAX_EXPOSURE_PCT:
             print(f"Skipping {symbol}: exposure {exposure} > {MAX_EXPOSURE_PCT*100:.0f}% of capital.")
             skipped_signals += 1
             return False
 
-        # ===== SEND SIGNAL HEADER =====
         header = (
             f"✅ {chosen_dir} {symbol}\n"
             f"💵 Entry: {entry}\n"
@@ -661,14 +654,13 @@ def analyze_symbol(symbol):
             f"🛑 SL: {sl}\n"
             f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
             f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}\n"
-            f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: {btc_dom:.2f}%" 
+            f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: {btc_dom:.2f}%"
             if btc_dom is not None else
             f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: unknown"
         )
 
         send_message(header)
 
-        # ===== REGISTER TRADE OBJECT =====
         trade_obj = {
             "s": symbol,
             "side": chosen_dir,
@@ -708,6 +700,14 @@ def analyze_symbol(symbol):
 
         print(f"✅ Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
         return True
+
+    # ===== FIX ADDED HERE — PROPERLY CLOSE try BLOCK =====
+    except Exception as e:
+        print(f"❌ analyze_symbol() error for {symbol}: {e}")
+        traceback.print_exc()
+        skipped_signals += 1
+        return False
+
 
 # ===== TRADE CHECK (TP/SL/BREAKEVEN) =====
 def check_trades():
