@@ -470,7 +470,7 @@ def analyze_symbol(symbol):
         return False
 
     # ============================================================
-    # SEMI-STRICT TF AGREEMENT (BEST MODE)
+    # SCALP TF AGREEMENT — (15m + 30m ONLY)
     # ============================================================
 
     def get_tf_bias(symbol, tf):
@@ -482,27 +482,20 @@ def analyze_symbol(symbol):
 
     bias_15m = get_tf_bias(symbol, "15m")
     bias_30m = get_tf_bias(symbol, "30m")
-    bias_1h  = get_tf_bias(symbol, "1h")
 
     # Missing bias → skip
-    if None in (bias_15m, bias_30m, bias_1h):
-        print(f"Skipping {symbol}: TF bias missing (15m/30m/1H).")
+    if None in (bias_15m, bias_30m):
+        print(f"Skipping {symbol}: TF bias missing (15m/30m).")
         skipped_signals += 1
         return False
 
-    # STRONG RULE: 15m must match 30m
+    # STRICT RULE: 15m must match 30m
     if bias_15m != bias_30m:
         print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
         skipped_signals += 1
         return False
 
-    # SOFT RULE: 1H must NOT be opposite of 15m
-    if bias_1h != bias_15m:
-        print(f"Soft block: 1H={bias_1h} conflicts with 15m={bias_15m}. Skipping {symbol}.")
-        skipped_signals += 1
-        return False
-
-    print(f"TF OK {symbol}: 15m={bias_15m}, 30m={bias_30m}, 1H={bias_1h}")
+    print(f"TF OK (SCALP) {symbol}: 15m={bias_15m}, 30m={bias_30m}")
 
     # ===== Continue with your normal signal generation here =====
     # ...
