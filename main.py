@@ -422,241 +422,228 @@ def log_trade_close(trade):
     except Exception as e:
         print("log_trade_close error:", e)
 # ===== ANALYSIS & SIGNAL GENERATION =====
-def current_total_exposure():
-    return sum([t.get("exposure", 0) for t in open_trades if t.get("st") == "open"])
-
-
 def analyze_symbol(symbol):
+    import traceback
     global total_checked_signals, skipped_signals, signals_sent_total
-    global last_trade_time, volatility_pause_until, STATS, recent_signals
+    global last_trade_time, volatility_pause_until, STATS, recent_signals, open_trades
 
-    total_checked_signals += 1
-    now = time.time()
+    try:
+        total_checked_signals += 1
+        now = time.time()
 
-    # ===== VOLATILITY PAUSE =====
-    if now < volatility_pause_until:
-        return False
-
-    # ===== BASIC SYMBOL VALIDATION =====
-    if not symbol or not isinstance(symbol, str):
-        skipped_signals += 1
-        return False
-
-    # ===== SYMBOL BLACKLIST =====
-    if symbol in SYMBOL_BLACKLIST:
-        skipped_signals += 1
-        return False
-
-    # ===== 24H VOLUME FILTER =====
-    vol24 = get_24h_quote_volume(symbol)
-    if vol24 < MIN_QUOTE_VOLUME:
-        skipped_signals += 1
-        return False
-
-    # ===== COOLDOWN CHECK =====
-    if last_trade_time.get(symbol, 0) > now:
-        print(f"Cooldown active for {symbol}, skipping until {datetime.fromtimestamp(last_trade_time.get(symbol))}")
-        skipped_signals += 1
-        return False
-
-    # ===== BTC MARKET STATE =====
-    btc_dir = btc_direction_1h()
-    btc_dom = get_btc_dominance()
-    btc_adx = btc_adx_4h_ok()
-
-    if btc_dir is None:
-        print(f"Skipping {symbol}: BTC direction unclear.")
-        skipped_signals += 1
-        return False
-
-    # ============================================================
-    # SCALP TF AGREEMENT — (15m + 30m ONLY)
-    # ============================================================
-
-    def get_tf_bias(symbol, tf):
-        df = get_klines(symbol, tf, 150)
-        if df is None or len(df) < 50:
-            return None
-        b = smc_bias(df)
-        return "bull" if b == "bull" else "bear"
-
-    bias_15m = get_tf_bias(symbol, "15m")
-    bias_30m = get_tf_bias(symbol, "30m")
-
-    # Missing bias → skip
-    if None in (bias_15m, bias_30m):
-        print(f"Skipping {symbol}: TF bias missing (15m/30m).")
-        skipped_signals += 1
-        return False
-
-    # ------------------------------------------------------------
-    # SOFT RULE: 30m must NOT be the opposite of 15m
-    # ------------------------------------------------------------
-    if bias_15m == "bull" and bias_30m == "bear":
-        print(f"Soft skip {symbol}: 30m contradicts 15m (bull vs bear).")
-        skipped_signals += 1
-        return False
-
-    if bias_15m == "bear" and bias_30m == "bull":
-        print(f"Soft skip {symbol}: 30m contradicts 15m (bear vs bull).")
-        skipped_signals += 1
-        return False
-
-    print(f"TF OK (SCALP) {symbol}: 15m={bias_15m}, 30m={bias_30m}")
-
-    # ===== Continue with your normal signal generation here =====
-    # ...
-    # ===== If BTC direction is unknown → block everything (for safety) =====
-    if btc_dir is None:
-        print(f"Skipping {symbol}: BTC direction unclear.")
-        skipped_signals += 1
-        return False
-
-    # ===== ADX FILTER (Blocks minor ALTS only, allows BTC & ETH) =====
-    if symbol == "BTCUSDT":
-        BTC_ADX_MIN = 15.0  # BTC allowed earlier
-    elif symbol == "ETHUSDT":
-        BTC_ADX_MIN = 16.0  # ETH slightly stricter
-    else:
-        BTC_ADX_MIN = 18.0  # other alts need stronger BTC trend
-
-    if symbol not in ["BTCUSDT", "ETHUSDT"]:  # block weak trend for smaller alts
-        if btc_adx is None:
-            print(f"Skipping {symbol}: BTC ADX unavailable.")
-            skipped_signals += 1
+        # ===== VOLATILITY PAUSE =====
+        if now < volatility_pause_until:
             return False
-        if btc_adx < BTC_ADX_MIN:
-            print(f"Skipping {symbol}: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN} (trend weak → no alt scalps).")
+
+        # ===== BASIC SYMBOL VALIDATION =====
+        if not symbol or not isinstance(symbol, str):
             skipped_signals += 1
             return False
 
-    # ===== DOMINANCE FILTER (Blocks ALTS only) =====
-    BTC_DOM_MAX = 55.0
-    if symbol not in ["BTCUSDT", "ETHUSDT"]:  # allow BTC & ETH no matter what
-        if btc_dom is None:
-            print(f"Skipping {symbol}: BTC dominance unavailable.")
-            skipped_signals += 1
-            return False
-        if btc_dom > BTC_DOM_MAX:
-            print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOM_MAX}% (alts suppressed).")
+        # ===== SYMBOL BLACKLIST =====
+        if symbol in SYMBOL_BLACKLIST:
             skipped_signals += 1
             return False
 
-    # ===== BTC RISK MULTIPLIER BASED ON DIRECTION =====
-    if btc_dir == "BULL":
-        btc_risk_mult = BTC_RISK_MULT_BULL
-    elif btc_dir == "BEAR":
-        btc_risk_mult = BTC_RISK_MULT_BEAR
-    else:
-        btc_risk_mult = BTC_RISK_MULT_MIXED
-        
-    tf_confirmations = 0
-    chosen_dir      = None
-    chosen_entry    = None
-    chosen_tf       = None
-    confirming_tfs  = []
-    breakdown_per_tf = {}
-    per_tf_scores = []
+        # ===== 24H VOLUME FILTER =====
+        vol24 = get_24h_quote_volume(symbol)
+        if vol24 < MIN_QUOTE_VOLUME:
+            skipped_signals += 1
+            return False
 
-    for tf in TIMEFRAMES:
-        df = get_klines(symbol, tf)
-        if df is None or len(df) < 60:
-            breakdown_per_tf[tf] = None
-            continue
+        # ===== COOLDOWN CHECK =====
+        if last_trade_time.get(symbol, 0) > now:
+            print(f"Cooldown active for {symbol}, skipping until {datetime.fromtimestamp(last_trade_time.get(symbol))}")
+            skipped_signals += 1
+            return False
 
-        tf_index = TIMEFRAMES.index(tf)
-        if tf_index < len(TIMEFRAMES) - 1:
-            higher_tf = TIMEFRAMES[tf_index + 1]
-            if not tf_agree(symbol, tf, higher_tf):
-                breakdown_per_tf[tf] = {"skipped_due_tf_disagree": True}
+        # ===== BTC MARKET STATE =====
+        btc_dir = btc_direction_1h()
+        btc_dom = get_btc_dominance()
+        btc_adx = btc_adx_4h_ok()
+
+        if btc_dir is None:
+            print(f"Skipping {symbol}: BTC direction unclear.")
+            skipped_signals += 1
+            return False
+
+        # ============================================================
+        # SCALP TF AGREEMENT — (15m + 30m) - SOFT RULE
+        # ============================================================
+        def get_tf_bias_local(sym, tf):
+            df = get_klines(sym, tf, 150)
+            if df is None or len(df) < 50:
+                return None
+            b = smc_bias(df)
+            return "bull" if b == "bull" else "bear"
+
+        bias_15m = get_tf_bias_local(symbol, "15m")
+        bias_30m = get_tf_bias_local(symbol, "30m")
+
+        if None in (bias_15m, bias_30m):
+            print(f"Skipping {symbol}: TF bias missing (15m/30m).")
+            skipped_signals += 1
+            return False
+
+        # soft-block only when opposite
+        if bias_15m == "bull" and bias_30m == "bear":
+            print(f"Soft skip {symbol}: 30m contradicts 15m (bull vs bear).")
+            skipped_signals += 1
+            return False
+        if bias_15m == "bear" and bias_30m == "bull":
+            print(f"Soft skip {symbol}: 30m contradicts 15m (bear vs bull).")
+            skipped_signals += 1
+            return False
+
+        print(f"TF OK (SCALP) {symbol}: 15m={bias_15m}, 30m={bias_30m}")
+
+        # ===== ADX + DOMINANCE FILTERS =====
+        if symbol == "BTCUSDT":
+            BTC_ADX_MIN = 15.0
+        elif symbol == "ETHUSDT":
+            BTC_ADX_MIN = 16.0
+        else:
+            BTC_ADX_MIN = 18.0
+
+        if symbol not in ["BTCUSDT", "ETHUSDT"]:
+            if btc_adx is None:
+                print(f"Skipping {symbol}: BTC ADX unavailable.")
+                skipped_signals += 1
+                return False
+            if btc_adx < BTC_ADX_MIN:
+                print(f"Skipping {symbol}: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN}")
+                skipped_signals += 1
+                return False
+
+        BTC_DOM_MAX = 55.0
+        if symbol not in ["BTCUSDT", "ETHUSDT"]:
+            if btc_dom is None:
+                print(f"Skipping {symbol}: BTC dominance unavailable.")
+                skipped_signals += 1
+                return False
+            if btc_dom > BTC_DOM_MAX:
+                print(f"Skipping {symbol}: BTC dominance {btc_dom:.2f}% > {BTC_DOM_MAX}%")
+                skipped_signals += 1
+                return False
+
+        # ===== BTC RISK MULTIPLIER =====
+        if btc_dir == "BULL":
+            btc_risk_mult = BTC_RISK_MULT_BULL
+        elif btc_dir == "BEAR":
+            btc_risk_mult = BTC_RISK_MULT_BEAR
+        else:
+            btc_risk_mult = BTC_RISK_MULT_MIXED
+
+        # ===== MULTI-TF SCORING (no tf_agree) =====
+        tf_confirmations = 0
+        chosen_dir = None
+        chosen_entry = None
+        chosen_tf = None
+        confirming_tfs = []
+        breakdown_per_tf = {}
+        per_tf_scores = []
+
+        for tf in TIMEFRAMES:
+            df = get_klines(symbol, tf)
+            if df is None or len(df) < 60:
+                breakdown_per_tf[tf] = None
                 continue
 
-        crt_b, crt_s = detect_crt(df)
-        ts_b, ts_s = detect_turtle(df)
-        bias        = smc_bias(df)
-        vol_ok      = volume_ok(df)
+            crt_b, crt_s = detect_crt(df)
+            ts_b, ts_s = detect_turtle(df)
+            bias = smc_bias(df)
+            vol_ok = volume_ok(df)
 
-        bull_score = (WEIGHT_CRT*(1 if crt_b else 0) + WEIGHT_TURTLE*(1 if ts_b else 0) +
-                      WEIGHT_VOLUME*(1 if vol_ok else 0) + WEIGHT_BIAS*(1 if bias=="bull" else 0))*100
-        bear_score = (WEIGHT_CRT*(1 if crt_s else 0) + WEIGHT_TURTLE*(1 if ts_s else 0) +
-                      WEIGHT_VOLUME*(1 if vol_ok else 0) + WEIGHT_BIAS*(1 if bias=="bear" else 0))*100
+            bull_score = (
+                WEIGHT_CRT * int(crt_b) +
+                WEIGHT_TURTLE * int(ts_b) +
+                WEIGHT_VOLUME * int(vol_ok) +
+                WEIGHT_BIAS * int(bias == "bull")
+            ) * 100
 
-        breakdown_per_tf[tf] = {
-            "bull_score": int(bull_score),
-            "bear_score": int(bear_score),
-            "bias": bias,
-            "vol_ok": vol_ok,
-            "crt_b": bool(crt_b),
-            "crt_s": bool(crt_s),
-            "ts_b": bool(ts_b),
-            "ts_s": bool(ts_s)
-        }
+            bear_score = (
+                WEIGHT_CRT * int(crt_s) +
+                WEIGHT_TURTLE * int(ts_s) +
+                WEIGHT_VOLUME * int(vol_ok) +
+                WEIGHT_BIAS * int(bias == "bear")
+            ) * 100
 
-        per_tf_scores.append(max(bull_score, bear_score))
+            breakdown_per_tf[tf] = {
+                "bull_score": int(bull_score),
+                "bear_score": int(bear_score),
+                "bias": bias,
+                "vol_ok": vol_ok,
+                "crt_b": bool(crt_b),
+                "crt_s": bool(crt_s),
+                "ts_b": bool(ts_b),
+                "ts_s": bool(ts_s),
+            }
 
-        if bull_score >= MIN_TF_SCORE:
-            tf_confirmations += 1
-            chosen_dir    = "BUY"
-            chosen_entry  = float(df["close"].iloc[-1])
-            chosen_tf     = tf
-            confirming_tfs.append(tf)
-        elif bear_score >= MIN_TF_SCORE:
-            tf_confirmations += 1
-            chosen_dir   = "SELL"
-            chosen_entry = float(df["close"].iloc[-1])
-            chosen_tf    = tf
-            confirming_tfs.append(tf)
+            per_tf_scores.append(max(bull_score, bear_score))
 
-    print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations. Breakdown: {breakdown_per_tf}")
+            if bull_score >= MIN_TF_SCORE:
+                tf_confirmations += 1
+                chosen_dir = "BUY"
+                chosen_entry = float(df["close"].iloc[-1])
+                chosen_tf = tf
+                confirming_tfs.append(tf)
+            elif bear_score >= MIN_TF_SCORE:
+                tf_confirmations += 1
+                chosen_dir = "SELL"
+                chosen_entry = float(df["close"].iloc[-1])
+                chosen_tf = tf
+                confirming_tfs.append(tf)
 
-    # require at least CONF_MIN_TFS confirmations
-    if not (tf_confirmations >= CONF_MIN_TFS and chosen_dir and chosen_entry is not None):
-        return False
+        print(f"Scanning {symbol}: {tf_confirmations}/{len(TIMEFRAMES)} confirmations. Breakdown: {breakdown_per_tf}")
 
-    # compute confidence
-    confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
-    confidence_pct = max(0.0, min(100.0, confidence_pct))
+        # require at least CONF_MIN_TFS confirmations
+        if not (tf_confirmations >= CONF_MIN_TFS and chosen_dir and chosen_entry is not None):
+            return False
 
-    # small safety fallback
-    if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
-        print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
-        skipped_signals += 1
-        return False
+        # compute confidence
+        confidence_pct = float(np.mean(per_tf_scores)) if per_tf_scores else 100.0
+        confidence_pct = max(0.0, min(100.0, confidence_pct))
 
-    # global open-trade / exposure limits
-    if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
-        print(f"Skipping {symbol}: max open trades reached ({MAX_OPEN_TRADES}).")
-        skipped_signals += 1
-        return False
+        # small safety fallback
+        if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
+            print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
+            skipped_signals += 1
+            return False
 
-    # dedupe on signature
-    sig = (symbol, chosen_dir, round(chosen_entry, 6))
-    if recent_signals.get(sig, 0) + RECENT_SIGNAL_SIGNATURE_EXPIRE > time.time():
-        print(f"Skipping {symbol}: duplicate recent signal {sig}.")
-        skipped_signals += 1
-        return False
-    recent_signals[sig] = time.time()
+        # global open-trade / exposure limits
+        if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
+            print(f"Skipping {symbol}: max open trades reached ({MAX_OPEN_TRADES}).")
+            skipped_signals += 1
+            return False
 
-    sentiment = sentiment_label()
+        # dedupe on signature
+        sig = (symbol, chosen_dir, round(chosen_entry, 6))
+        if recent_signals.get(sig, 0) + RECENT_SIGNAL_SIGNATURE_EXPIRE > time.time():
+            print(f"Skipping {symbol}: duplicate recent signal {sig}.")
+            skipped_signals += 1
+            return False
+        recent_signals[sig] = time.time()
 
-    entry = get_price(symbol)
-    if entry is None:
-        skipped_signals += 1
-        return False
+        sentiment = sentiment_label()
 
-    conf_multiplier = max(0.5, min(1.3, confidence_pct / 100.0 + 0.5))
-    tp_sl = trade_params(symbol, entry, chosen_dir, conf_multiplier=conf_multiplier)
-    if not tp_sl:
-        skipped_signals += 1
-        return False
-    sl, tp1, tp2, tp3 = tp_sl
+        entry = get_price(symbol)
+        if entry is None:
+            skipped_signals += 1
+            return False
 
-    units, margin, exposure, risk_used = pos_size_units(entry, sl, confidence_pct, btc_risk_multiplier=btc_risk_mult)
+        conf_multiplier = max(0.5, min(1.3, confidence_pct / 100.0 + 0.5))
+        tp_sl = trade_params(symbol, entry, chosen_dir, conf_multiplier=conf_multiplier)
+        if not tp_sl:
+            skipped_signals += 1
+            return False
+        sl, tp1, tp2, tp3 = tp_sl
 
-    if units <= 0 or margin <= 0 or exposure <= 0:
-        print(f"Skipping {symbol}: invalid position sizing (units:{units}, margin:{margin}).")
-        skipped_signals += 1
-        return False
+        units, margin, exposure, risk_used = pos_size_units(entry, sl, confidence_pct, btc_risk_multiplier=btc_risk_mult)
+
+        if units <= 0 or margin <= 0 or exposure <= 0:
+            print(f"Skipping {symbol}: invalid position sizing (units:{units}, margin:{margin}).")
+            skipped_signals += 1
+            return False
 
     if exposure > CAPITAL * MAX_EXPOSURE_PCT:
         print(f"Skipping {symbol}: exposure {exposure} > {MAX_EXPOSURE_PCT*100:.0f}% of capital.")
