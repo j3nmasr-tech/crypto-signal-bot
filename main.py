@@ -852,16 +852,16 @@ print("Monitoring BTC, ETH, SOL only.")
 while True:
     try:
         # Skip during BTC volatility pause
-        if time.time() < volatility_pause_until:
-            time.sleep(1)
-            continue
+        #if time.time() < volatility_pause_until:
+            #time.sleep(1)
+            #continue
 
         # BTC volatility spike check
-        if btc_volatility_spike():
-            volatility_pause_until = time.time() + VOLATILITY_PAUSE
-            send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
-            print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
-            continue
+        #if btc_volatility_spike():
+            #volatility_pause_until = time.time() + VOLATILITY_PAUSE
+            #send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
+            #print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
+            #continue
 
         # Scan all monitored symbols
         for i, sym in enumerate(SYMBOLS, start=1):
