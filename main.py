@@ -708,7 +708,7 @@ def analyze_symbol(symbol):
 
         print(f"✅ Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
         return True
-        
+
 # ===== TRADE CHECK (TP/SL/BREAKEVEN) =====
 def check_trades():
     global signals_hit_total, signals_fail_total, signals_breakeven, STATS, last_trade_time, last_trade_result
