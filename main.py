@@ -489,9 +489,16 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # STRICT RULE: 15m must match 30m
-    if bias_15m != bias_30m:
-        print(f"Skipping {symbol}: 15m={bias_15m} disagrees with 30m={bias_30m}.")
+    # ------------------------------------------------------------
+    # SOFT RULE: 30m must NOT be the opposite of 15m
+    # ------------------------------------------------------------
+    if bias_15m == "bull" and bias_30m == "bear":
+        print(f"Soft skip {symbol}: 30m contradicts 15m (bull vs bear).")
+        skipped_signals += 1
+        return False
+
+    if bias_15m == "bear" and bias_30m == "bull":
+        print(f"Soft skip {symbol}: 30m contradicts 15m (bear vs bull).")
         skipped_signals += 1
         return False
 
@@ -852,16 +859,16 @@ print("Monitoring BTC, ETH, SOL only.")
 while True:
     try:
         # Skip during BTC volatility pause
-        #if time.time() < volatility_pause_until:
-            #time.sleep(1)
-            #continue
+        if time.time() < volatility_pause_until:
+            time.sleep(1)
+            continue
 
         # BTC volatility spike check
-        #if btc_volatility_spike():
-            #volatility_pause_until = time.time() + VOLATILITY_PAUSE
-            #send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
-            #print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
-            #continue
+        if btc_volatility_spike():
+            volatility_pause_until = time.time() + VOLATILITY_PAUSE
+            send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
+            print(f"⚠️ BTC volatility spike – pausing until {datetime.fromtimestamp(volatility_pause_until)}")
+            continue
 
         # Scan all monitored symbols
         for i, sym in enumerate(SYMBOLS, start=1):
