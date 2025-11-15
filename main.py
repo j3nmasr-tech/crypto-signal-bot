@@ -638,65 +638,76 @@ def analyze_symbol(symbol):
             return False
         sl, tp1, tp2, tp3 = tp_sl
 
-        units, margin, exposure, risk_used = pos_size_units(entry, sl, confidence_pct, btc_risk_multiplier=btc_risk_mult)
+        units, margin, exposure, risk_used = pos_size_units(
+            entry, sl, confidence_pct, btc_risk_multiplier=btc_risk_mult
+        )
 
         if units <= 0 or margin <= 0 or exposure <= 0:
             print(f"Skipping {symbol}: invalid position sizing (units:{units}, margin:{margin}).")
             skipped_signals += 1
             return False
 
-    if exposure > CAPITAL * MAX_EXPOSURE_PCT:
-        print(f"Skipping {symbol}: exposure {exposure} > {MAX_EXPOSURE_PCT*100:.0f}% of capital.")
-        skipped_signals += 1
-        return False
+        # ===== EXPOSURE SAFETY CHECK =====
+        if exposure > CAPITAL * MAX_EXPOSURE_PCT:
+            print(f"Skipping {symbol}: exposure {exposure} > {MAX_EXPOSURE_PCT*100:.0f}% of capital.")
+            skipped_signals += 1
+            return False
 
-    header = (f"✅ {chosen_dir} {symbol}\n"
-              f"💵 Entry: {entry}\n"
-              f"🎯 TP1:{tp1} TP2:{tp2} TP3:{tp3}\n"
-              f"🛑 SL: {sl}\n"
-              f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
-              f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}\n"
-              f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: {btc_dom:.2f}%" if btc_dom is not None else
-              f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: unknown"
-             )
+        # ===== SEND SIGNAL HEADER =====
+        header = (
+            f"✅ {chosen_dir} {symbol}\n"
+            f"💵 Entry: {entry}\n"
+            f"🎯 TP1:{tp1} TP2:{tp2} TP3:{tp3}\n"
+            f"🛑 SL: {sl}\n"
+            f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
+            f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}\n"
+            f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: {btc_dom:.2f}%" 
+            if btc_dom is not None else
+            f"📌 BTC: {btc_dir} | ADX(4H): {btc_adx:.2f} | Dominance: unknown"
+        )
 
-    send_message(header)
+        send_message(header)
 
-    trade_obj = {
-        "s": symbol,
-        "side": chosen_dir,
-        "entry": entry,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp3": tp3,
-        "sl": sl,
-        "st": "open",
-        "units": units,
-        "margin": margin,
-        "exposure": exposure,
-        "risk_pct": risk_used,
-        "confidence_pct": confidence_pct,
-        "tp1_taken": False,
-        "tp2_taken": False,
-        "tp3_taken": False,
-        "placed_at": time.time(),
-        "entry_tf": chosen_tf,
-        "btc_dir": btc_dir,
-        "btc_dom": btc_dom,
-        "btc_adx": btc_adx
-    }
-    open_trades.append(trade_obj)
-    signals_sent_total += 1
-    STATS["by_side"][chosen_dir]["sent"] += 1
-    if chosen_tf in STATS["by_tf"]:
-        STATS["by_tf"][chosen_tf]["sent"] += 1
-    log_signal([
-        datetime.utcnow().isoformat(), symbol, chosen_dir, entry,
-        tp1, tp2, tp3, sl, chosen_tf, units, margin, exposure,
-        risk_used*100, confidence_pct, btc_dir, btc_dom, btc_adx, "open", str(breakdown_per_tf)
-    ])
-    print(f"✅ Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
-    return True
+        # ===== REGISTER TRADE OBJECT =====
+        trade_obj = {
+            "s": symbol,
+            "side": chosen_dir,
+            "entry": entry,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp3": tp3,
+            "sl": sl,
+            "st": "open",
+            "units": units,
+            "margin": margin,
+            "exposure": exposure,
+            "risk_pct": risk_used,
+            "confidence_pct": confidence_pct,
+            "tp1_taken": False,
+            "tp2_taken": False,
+            "tp3_taken": False,
+            "placed_at": time.time(),
+            "entry_tf": chosen_tf,
+            "btc_dir": btc_dir,
+            "btc_dom": btc_dom,
+            "btc_adx": btc_adx
+        }
+
+        open_trades.append(trade_obj)
+        signals_sent_total += 1
+        STATS["by_side"][chosen_dir]["sent"] += 1
+        if chosen_tf in STATS["by_tf"]:
+            STATS["by_tf"][chosen_tf]["sent"] += 1
+
+        log_signal([
+            datetime.utcnow().isoformat(), symbol, chosen_dir, entry,
+            tp1, tp2, tp3, sl, chosen_tf, units, margin, exposure,
+            risk_used*100, confidence_pct, btc_dir, btc_dom, btc_adx,
+            "open", str(breakdown_per_tf)
+        ])
+
+        print(f"✅ Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
+        return True
     # ===== TRADE CHECK (TP/SL/BREAKEVEN) =====
 def check_trades():
     global signals_hit_total, signals_fail_total, signals_breakeven, STATS, last_trade_time, last_trade_result
