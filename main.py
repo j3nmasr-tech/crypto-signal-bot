@@ -33,7 +33,7 @@ VOLATILITY_THRESHOLD_PCT = 2.5
 VOLATILITY_PAUSE = 1800
 CHECK_INTERVAL = 300
 
-API_CALL_DELAY = 0.06  # slightly higher for Bybit
+API_CALL_DELAY = 0.2  # slightly higher for Bybit
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
 WEIGHT_BIAS   = 0.40
