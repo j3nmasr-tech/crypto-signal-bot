@@ -140,7 +140,9 @@ def safe_get_json(url, params=None, timeout=5, retries=2):
             print(f"⚠️ Unexpected error fetching {url}: {e}")
             return None
 
-# ===== SYMBOLS =====
+===== INDICATORS, HELPERS, SENTIMENT, ADX, LOGGING & ANALYSIS (FULL) =====
+
+# ---- S Y M B O L  H E L P E R S ----
 def get_top_symbols(n=None):
     # Force bot to ONLY scan these 3 pairs
     return ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
@@ -196,9 +198,10 @@ def get_price(symbol):
         return float(lst[0].get("lastPrice") or lst[0].get("last_price") or 0.0)
     except Exception:
         return None
-        # ===== INDICATORS =====
+
+# ---- INDICATOR DETECTORS ----
 def detect_crt(df):
-    if len(df) < 12:
+    if df is None or len(df) < 12:
         return False, False
     last = df.iloc[-1]
     o = float(last["open"]); h = float(last["high"]); l = float(last["low"]); c = float(last["close"]); v = float(last["volume"])
@@ -212,32 +215,68 @@ def detect_crt(df):
     wick_down = min(o, c) - l
     bull = (body < avg_body * 0.8) and (wick_down > avg_body * 0.5) and (v < avg_vol * 1.5) and (c > o)
     bear = (body < avg_body * 0.8) and (wick_up   > avg_body * 0.5) and (v < avg_vol * 1.5) and (c < o)
-    return bull, bear
+    return bool(bull), bool(bear)
 
 def detect_turtle(df, look=20):
-    if len(df) < look+2:
+    if df is None or len(df) < look + 2:
         return False, False
     ph = df["high"].iloc[-look-1:-1].max()
     pl = df["low"].iloc[-look-1:-1].min()
     last = df.iloc[-1]
-    bull = (last["low"] < pl) and (last["close"] > pl*1.002)
-    bear = (last["high"] > ph) and (last["close"] < ph*0.998)
-    return bull, bear
+    bull = (last["low"] < pl) and (last["close"] > pl * 1.002)
+    bear = (last["high"] > ph) and (last["close"] < ph * 0.998)
+    return bool(bull), bool(bear)
 
 def smc_bias(df):
+    # returns "bull" or "bear"
+    if df is None or len(df) < 3:
+        return "bear"
     e20 = df["close"].ewm(span=20).mean().iloc[-1]
     e50 = df["close"].ewm(span=50).mean().iloc[-1]
     return "bull" if e20 > e50 else "bear"
 
 def volume_ok(df):
+    if df is None or len(df) < 8:
+        return True
     ma = df["volume"].rolling(20, min_periods=8).mean().iloc[-1]
     if np.isnan(ma):
         return True
     current = df["volume"].iloc[-1]
     return current > ma * 1.3
 
+# ---- SMC CONFIDENCE HELPER (MISSING BEFORE) ----
+def smc_confidence(df):
+    """
+    Compute a 0-100 confidence score for a given kline dataframe using the same
+    components your strategy uses: CRT, Turtle, Volume, Bias.
+    """
+    try:
+        if df is None or len(df) < 12:
+            return 0.0
 
-# ===== ATR & POSITION SIZING =====
+        w_bias   = float(globals().get("WEIGHT_BIAS", 0.4))
+        w_turtle = float(globals().get("WEIGHT_TURTLE", 0.25))
+        w_crt    = float(globals().get("WEIGHT_CRT", 0.2))
+        w_vol    = float(globals().get("WEIGHT_VOLUME", 0.15))
+
+        crt_b, crt_s = detect_crt(df)
+        ts_b, ts_s   = detect_turtle(df)
+        bias         = smc_bias(df)
+        vol_ok_flag  = volume_ok(df)
+
+        crt_score = 1.0 if (crt_b or crt_s) else 0.0
+        turtle_score = 1.0 if (ts_b or ts_s) else 0.0
+        vol_score = 1.0 if vol_ok_flag else 0.0
+        bias_score = 1.0 if bias == "bull" else 0.0
+
+        raw = (w_crt * crt_score) + (w_turtle * turtle_score) + (w_vol * vol_score) + (w_bias * bias_score)
+        score = max(0.0, min(100.0, raw * 100.0))
+        return float(score)
+    except Exception as e:
+        print("smc_confidence error:", e)
+        return 0.0
+
+# ---- ATR & POSITION SIZING ----
 def get_atr(symbol, period=14):
     df = get_klines(symbol, "1h", period+1)
     if df is None or len(df) < period+1:
@@ -286,12 +325,12 @@ def pos_size_units(entry, sl, confidence_pct, btc_risk_multiplier=1.0):
         return 0.0, 0.0, 0.0, risk_percent
     return round(units,8), round(margin_req,6), round(exposure,6), risk_percent
 
-# ===== SENTIMENT =====
+# ---- SENTIMENT (FNG) ----
 def get_fear_greed_value():
     j = safe_get_json(FNG_API, {}, timeout=3, retries=1)
     try:
         return int(j["data"][0]["value"])
-    except:
+    except Exception:
         return 50
 
 def sentiment_label():
@@ -300,7 +339,7 @@ def sentiment_label():
     if v > 75: return "greed"
     return "neutral"
 
-# ===== BTC ADX COMPUTATION =====
+# ---- ADX / BTC helpers ----
 def compute_adx(df, period=14):
     try:
         high = df["high"].values; low = df["low"].values; close = df["close"].values
@@ -335,9 +374,6 @@ def btc_adx_4h_ok(min_adx=BTC_ADX_MIN, period=14):
     print(f"BTC 4H ADX: {adx:.2f}")
     return float(adx)
 
-# ===== BTC DIRECTION & DOMINANCE =====
-COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
-
 def btc_direction_1h():
     try:
         df1 = get_klines("BTCUSDT", "1h", 120)
@@ -349,47 +385,38 @@ def btc_direction_1h():
         print("btc_direction_1h error:", e)
         return None
 
+# ---- DOMINANCE / VOL SPIKE ----
 import time
-
 _last_dom = None
 _last_dom_time = 0
 
 def get_btc_dominance():
     global _last_dom, _last_dom_time
-
-    # Use cached value for 60 seconds (prevents API spam)
     if _last_dom is not None and time.time() - _last_dom_time < 60:
         return _last_dom
-
     try:
         r = requests.get(COINGECKO_GLOBAL, timeout=8)
         data = r.json()
-
-        # CoinGecko format: data -> market_cap_percentage -> btc
         dom = data.get("data", {}).get("market_cap_percentage", {}).get("btc")
-
-        # If missing or invalid, skip update
         if dom is None:
             print("⚠️ BTC dominance missing in CoinGecko response.")
             return _last_dom
-
         dom = float(dom)
         _last_dom = round(dom, 2)
         _last_dom_time = time.time()
         return _last_dom
-
     except Exception as e:
         print("⚠️ Dominance fetch error (CoinGecko):", e)
-        return _last_dom  # fallback to last known, do NOT break bot
-        
+        return _last_dom
+
 def btc_volatility_spike():
     df = get_klines("BTCUSDT", "5m", 3)
     if df is None or len(df) < 3:
         return False
     pct = (df["close"].iloc[-1] - df["close"].iloc[0]) / df["close"].iloc[0] * 100.0
     return abs(pct) >= VOLATILITY_THRESHOLD_PCT
-    
-# ===== LOGGING =====
+
+# ---- LOGGING ----
 def init_csv():
     if not os.path.exists(LOG_CSV):
         with open(LOG_CSV,"w",newline="") as f:
@@ -421,6 +448,7 @@ def log_trade_close(trade):
             ])
     except Exception as e:
         print("log_trade_close error:", e)
+
 # ===== ANALYSIS & SIGNAL GENERATION =====
 def analyze_symbol(symbol):
     import traceback
@@ -467,6 +495,35 @@ def analyze_symbol(symbol):
             skipped_signals += 1
             return False
 
+        # ===== FEAR & GREED FILTER (SCALP) =====
+        fg = None
+        try:
+            fg = int(get_fear_greed_value() or 50)
+        except Exception:
+            fg = 50
+
+        if fg is None:
+            print(f"Skipping {symbol}: F&G unavailable.")
+            skipped_signals += 1
+            return False
+
+        # Block ALTs in severe fear
+        if symbol not in ["BTCUSDT", "ETHUSDT"]:
+            if fg < 30:
+                print(f"Skipping {symbol}: Market FEAR (F&G={fg}) — ALT scalp blocked.")
+                skipped_signals += 1
+                return False
+
+        # Effective thresholds (do NOT mutate global CONFIDENCE_MIN)
+        effective_conf_min = float(CONFIDENCE_MIN or 55.0)
+        # harden during low sentiment
+        if fg < 45:
+            effective_conf_min = max(effective_conf_min, 60.0)
+
+        # extra TF minimum score used for score checks (adjust during greed)
+        extra_tf_min_score = 50
+        if fg > 70:
+            extra_tf_min_score = 60
 
         # ============================================================
         # SCALP TF AGREEMENT — 15m + 30m STRICT, 1H SOFT-BLOCK
@@ -478,15 +535,19 @@ def analyze_symbol(symbol):
                 return None, None
             bias = smc_bias(df)              # bull / bear
             score = smc_confidence(df)       # strength 0–100
+            try:
+                score = float(score or 0.0)
+            except:
+                score = 0.0
             return bias, score
 
         # ---- GET 15m, 30m, 1h ----
         bias_15m, score_15m = get_tf_bias_local(symbol, "15m")
         bias_30m, score_30m = get_tf_bias_local(symbol, "30m")
-        bias_1h, score_1h = get_tf_bias_local(symbol, "1h")
+        bias_1h,  score_1h  = get_tf_bias_local(symbol, "1h")
 
         # ---- Missing data ----
-        if None in (bias_15m, bias_30m, bias_1h, score_15m, score_30m, score_1h):
+        if None in (bias_15m, bias_30m, bias_1h) or any(s is None for s in (score_15m, score_30m, score_1h)):
             print(f"Skipping {symbol}: TF bias/score missing (15m/30m/1h).")
             skipped_signals += 1
             return False
@@ -500,8 +561,9 @@ def analyze_symbol(symbol):
             return False
 
         # Score checks for 15m + 30m (protects against weak momentum)
-        if score_15m < 50 or score_30m < 50:
-            print(f"Skip {symbol}: weak TF strength 15m={score_15m}, 30m={score_30m}.")
+        min_tf_score_req = max(50, extra_tf_min_score)
+        if score_15m < min_tf_score_req or score_30m < min_tf_score_req:
+            print(f"Skip {symbol}: weak TF strength 15m={score_15m:.1f}, 30m={score_30m:.1f} (req {min_tf_score_req}).")
             skipped_signals += 1
             return False
 
@@ -513,35 +575,45 @@ def analyze_symbol(symbol):
             skipped_signals += 1
             return False
 
+        # compute a conservative "signal confidence" as mean of the two short TFs
+        signal_confidence = float((score_15m + score_30m) / 2.0)
+
+        # final confidence gate (do not mutate global CONFIDENCE_MIN)
+        if signal_confidence < effective_conf_min:
+            print(f"Skipping {symbol}: signal confidence {signal_confidence:.1f}% < effective_conf_min {effective_conf_min}% (F&G={fg}).")
+            skipped_signals += 1
+            return False
+
         # ------------------------------------------------------------
-        # PASSED ALL TF FILTERS
+        # PASSED ALL TF + CONFIDENCE FILTERS
         # ------------------------------------------------------------
         print(
             f"TF OK (SCALP) {symbol}: "
-            f"15m={bias_15m}({score_15m}), "
-            f"30m={bias_30m}({score_30m}), "
-            f"1h={bias_1h}({score_1h})"
+            f"15m={bias_15m}({score_15m:.1f}), "
+            f"30m={bias_30m}({score_30m:.1f}), "
+            f"1h={bias_1h}({score_1h:.1f}), "
+            f"conf={signal_confidence:.1f}, F&G={fg}"
         )
 
         # ===== ADX + DOMINANCE FILTERS =====
         if symbol == "BTCUSDT":
-            BTC_ADX_MIN = 15.0
+            BTC_ADX_MIN_LOCAL = 15.0
         elif symbol == "ETHUSDT":
-            BTC_ADX_MIN = 16.0
+            BTC_ADX_MIN_LOCAL = 16.0
         else:
-            BTC_ADX_MIN = 18.0
-            
+            BTC_ADX_MIN_LOCAL = 18.0
+
         if symbol not in ["BTCUSDT", "ETHUSDT"]:
             if btc_adx is None:
                 print(f"Skipping {symbol}: BTC ADX unavailable.")
                 skipped_signals += 1
                 return False
-            if btc_adx < BTC_ADX_MIN:
-                print(f"Skipping {symbol}: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN}")
+            if btc_adx < BTC_ADX_MIN_LOCAL:
+                print(f"Skipping {symbol}: BTC ADX {btc_adx:.2f} < {BTC_ADX_MIN_LOCAL}")
                 skipped_signals += 1
                 return False
 
-        BTC_DOM_MAX = 55.0
+        BTC_DOM_MAX = float(globals().get("BTC_DOMINANCE_MAX", 58.0))
         if symbol not in ["BTCUSDT", "ETHUSDT"]:
             if btc_dom is None:
                 print(f"Skipping {symbol}: BTC dominance unavailable.")
@@ -559,7 +631,7 @@ def analyze_symbol(symbol):
             btc_risk_mult = BTC_RISK_MULT_BEAR
         else:
             btc_risk_mult = BTC_RISK_MULT_MIXED
-
+            
         # ===== MULTI-TF SCORING =====
         tf_confirmations = 0
         chosen_dir = None
