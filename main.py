@@ -9,7 +9,7 @@ import csv
 
 # ===== COINGECKO CACHING =====
 COINGECKO_CACHE = {"data": None, "fetched_at": 0}
-COINGECKO_CACHE_TTL = 120  # seconds, i.e., 2 minutes
+COINGECKO_CACHE_TTL = 300  # 5 minutes
 
 # ===== SYMBOL SANITIZATION =====
 def sanitize_symbol(symbol: str) -> str:
