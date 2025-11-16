@@ -25,7 +25,7 @@ COOLDOWN_TIME_FAIL    = 45 * 60    # 45 min
 
 VOLATILITY_THRESHOLD_PCT = 2.5
 VOLATILITY_PAUSE = 1800
-CHECK_INTERVAL = 300
+CHECK_INTERVAL = 60
 API_CALL_DELAY = 0.2  # Bybit rate-limit safety
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
@@ -113,17 +113,17 @@ def send_message(text):
         print("Telegram send error:", e)
         return False
 
-def safe_get_json(url, params=None, timeout=5, retries=2):
-    """Fetch JSON with retry/backoff."""
+def safe_get_json(url, params=None, timeout=3, retries=1):
+    """Fetch JSON safely, fast fail if API is slow."""
     for attempt in range(retries + 1):
         try:
             r = requests.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
-            print(f"⚠️ API request error ({e}) for {url} params={params} attempt={attempt+1}/{retries+1}")
+            print(f"⚠️ API request error ({e}) for {url}, attempt {attempt+1}/{retries+1}")
             if attempt < retries:
-                time.sleep(0.6 * (attempt + 1))
+                time.sleep(0.3)
                 continue
             return None
         except Exception as e:
