@@ -369,8 +369,8 @@ def get_dominance():
     mc = j["data"].get("market_cap_percentage", {})
     return {k.upper(): float(v) for k,v in mc.items()}
 
-def dominance_ok(symbol):
-    # Ignore BTC dominance completely
+def dominance_ok(symbol, coingecko_data=None):
+    # Ignore BTC dominance completely for now
     return True
 
 def sentiment_label(coingecko_data=None):
