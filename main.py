@@ -7,124 +7,100 @@ import numpy as np
 from datetime import datetime
 import csv
 
-# ===== COINGECKO CACHING =====
-COINGECKO_CACHE = {"data": None, "fetched_at": 0}
-COINGECKO_CACHE_TTL = 300  # 5 minutes
+# ===== CONFIG =====
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-# ===== SYMBOL SANITIZATION =====
+CAPITAL = 80.0
+LEVERAGE = 30
+
+COOLDOWN_TIME_DEFAULT = 1800
+COOLDOWN_TIME_SUCCESS = 15 * 60
+COOLDOWN_TIME_FAIL = 45 * 60
+
+VOLATILITY_THRESHOLD_PCT = 2.5
+VOLATILITY_PAUSE = 1800
+CHECK_INTERVAL = 300
+API_CALL_DELAY = 0.2
+
+TIMEFRAMES = ["15m", "30m", "1h", "4h"]
+WEIGHT_BIAS = 0.40
+WEIGHT_TURTLE = 0.25
+WEIGHT_CRT = 0.20
+WEIGHT_VOLUME = 0.15
+
+MIN_TF_SCORE = 55
+CONF_MIN_TFS = 2
+CONFIDENCE_MIN = 60.0
+
+MIN_QUOTE_VOLUME = 50_000_000  # $50M
+TOP_SYMBOLS = 80
+
+MAX_OPEN_TRADES = 10
+MIN_MARGIN_USD = 0.25
+SYMBOL_BLACKLIST = set([])
+RECENT_SIGNAL_SIGNATURE_EXPIRE = 300
+recent_signals = {}
+
+# ===== BYBIT & COINGECKO ENDPOINTS =====
+BYBIT_BASE = "https://api.bybit.com"
+BYBIT_KLINES = f"{BYBIT_BASE}/v5/market/kline"
+BYBIT_TICKERS = f"{BYBIT_BASE}/v5/market/tickers"
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+
+# ===== COINGECKO CACHE =====
+COINGECKO_CACHE = {"data": None, "fetched_at": 0}
+COINGECKO_CACHE_TTL = 300  # 5 min
+
+# ===== HELPERS =====
 def sanitize_symbol(symbol: str) -> str:
-    """Ensure symbol only contains legal Bybit characters and is upper-case."""
+    """Keep symbol uppercase and valid for Bybit."""
     if not symbol or not isinstance(symbol, str):
         return ""
     s = re.sub(r"[^A-Z0-9_.-]", "", symbol.upper())
     return s[:20]
 
-# ===== CONFIG =====
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID   = os.getenv("CHAT_ID")
-
-CAPITAL = 80.0
-LEVERAGE = 30
-COOLDOWN_TIME_DEFAULT = 1800
-COOLDOWN_TIME_SUCCESS = 15 * 60
-COOLDOWN_TIME_FAIL    = 45 * 60
-
-VOLATILITY_THRESHOLD_PCT = 2.5
-VOLATILITY_PAUSE = 1800
-CHECK_INTERVAL = 300
-
-API_CALL_DELAY = 0.2  # slightly higher for Bybit
-
-TIMEFRAMES = ["15m", "30m", "1h", "4h"]
-WEIGHT_BIAS   = 0.40
-WEIGHT_TURTLE = 0.25
-WEIGHT_CRT    = 0.20
-WEIGHT_VOLUME = 0.15
-
-# Aggressive-mode defaults
-MIN_TF_SCORE  = 55
-CONF_MIN_TFS  = 2
-CONFIDENCE_MIN = 60.0
-
-MIN_QUOTE_VOLUME = 50000000  # $50M 24h minimum
-TOP_SYMBOLS = 80
-
-# ===== BYBIT v5 ENDPOINTS =====
-BYBIT_BASE = "https://api.bybit.com"
-BYBIT_KLINES  = f"{BYBIT_BASE}/v5/market/kline"
-BYBIT_TICKERS = f"{BYBIT_BASE}/v5/market/tickers"
-COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
-
-LOG_CSV = "./sirts_v10_signals_bybit.csv"
-
-# ===== SAFEGUARDS =====
-STRICT_TF_AGREE = False
-MAX_OPEN_TRADES = 10
-MAX_EXPOSURE_PCT = 0.20
-MIN_MARGIN_USD = 0.25
-MIN_SL_DISTANCE_PCT = 0.0015
-SYMBOL_BLACKLIST = set([])
-RECENT_SIGNAL_SIGNATURE_EXPIRE = 300
-recent_signals = {}
-
-# ===== RISK =====
-BASE_RISK = 0.05
-MAX_RISK  = 0.06
-MIN_RISK  = 0.01
-
-# ===== STATE =====
-last_trade_time      = {}
-open_trades          = []
-signals_sent_total   = 0
-signals_hit_total    = 0
-signals_fail_total   = 0
-signals_breakeven    = 0
-total_checked_signals= 0
-skipped_signals      = 0
-last_heartbeat       = time.time()
-last_summary         = time.time()
-volatility_pause_until= 0
-last_trade_result = {}
-
-STATS = {
-    "by_side": {"BUY": {"sent":0,"hit":0,"fail":0,"breakeven":0},
-                "SELL":{"sent":0,"hit":0,"fail":0,"breakeven":0}},
-    "by_tf": {tf: {"sent":0,"hit":0,"fail":0,"breakeven":0} for tf in TIMEFRAMES}
-}
-
-# ===== HELPERS =====
-def send_message(text):
-    if not BOT_TOKEN or not CHAT_ID:
-        print("Telegram not configured:", text)
-        return False
-    try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                      data={"chat_id": CHAT_ID, "text": text}, timeout=10)
-        return True
-    except Exception as e:
-        print("Telegram send error:", e)
-        return False
-
 def safe_get_json(url, params=None, timeout=5, retries=2):
-    """Fetch JSON with retry/backoff."""
+    """Fetch JSON with retries and backoff."""
     for attempt in range(retries + 1):
         try:
             r = requests.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
-            print(f"⚠️ API request error ({e}) for {url} params={params} attempt={attempt+1}/{retries+1}")
+            print(f"⚠️ API error ({e}) url={url} params={params} attempt={attempt+1}/{retries+1}")
             if attempt < retries:
                 time.sleep(0.6 * (attempt + 1))
-                continue
-            return None
-        except Exception as e:
-            print(f"⚠️ Unexpected error fetching {url}: {e}")
-            return None
+    return None
 
-# ===== BYBIT v5 FUNCTIONS =====
+def send_message(text):
+    """Send Telegram message safely."""
+    if not BOT_TOKEN or not CHAT_ID:
+        print("Telegram not configured:", text)
+        return False
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data={"chat_id": CHAT_ID, "text": text},
+            timeout=10
+        )
+        return True
+    except Exception as e:
+        print("Telegram send error:", e)
+        return False
+
+# ===== INTERVAL MAPPING =====
+def interval_to_bybit(interval: str) -> str:
+    mapping = {
+        "1m":"1","3m":"3","5m":"5",
+        "15m":"15","30m":"30",
+        "1h":"60","2h":"120","4h":"240","1d":"D"
+    }
+    return mapping.get(interval, interval)
+
+# ===== BYBIT FUNCTIONS =====
 def get_top_symbols(n=TOP_SYMBOLS):
-    """Top USDT pairs by 24h quote volume."""
+    """Return top N USDT pairs by 24h quote volume."""
     j = safe_get_json(BYBIT_TICKERS, params={"category":"linear"}, timeout=5, retries=2)
     if not j or "result" not in j or "list" not in j["result"]:
         return ["BTCUSDT","ETHUSDT"]
@@ -145,7 +121,7 @@ def get_top_symbols(n=TOP_SYMBOLS):
     syms = [sanitize_symbol(s[0]) for s in usdt_pairs[:n]]
     return syms if syms else ["BTCUSDT","ETHUSDT"]
 
-def get_price(symbol):
+def get_price(symbol: str):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
@@ -155,12 +131,13 @@ def get_price(symbol):
     for d in j["result"]["list"]:
         if d.get("symbol","").upper() == symbol:
             try:
-                return float(d.get("lastPrice", d.get("last_price", None)))
+                return float(d.get("lastPrice", d.get("last_price", d.get("last", None))))
             except:
                 return None
     return None
 
-def get_klines(symbol, interval="15m", limit=200):
+def get_klines(symbol: str, interval="15m", limit=200):
+    """Fetch klines and return pd.DataFrame with ohlcv."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
@@ -172,14 +149,17 @@ def get_klines(symbol, interval="15m", limit=200):
     data = j["result"]["list"]
     try:
         df = pd.DataFrame(data)
-        df = df.rename(columns={"open":"open","high":"high","low":"low","close":"close","volume":"volume"})
+        df = df.rename(columns={
+            "open":"open","high":"high","low":"low","close":"close","volume":"volume"
+        })
         df = df[["open","high","low","close","volume"]].astype(float)
         return df
     except Exception as e:
-        print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
+        print(f"⚠️ get_klines parse error {symbol} {interval}: {e}")
         return None
 
-def get_24h_quote_volume(symbol):
+def get_24h_quote_volume(symbol: str):
+    """Return 24h quote volume in USD."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return 0.0
@@ -196,51 +176,24 @@ def get_24h_quote_volume(symbol):
                 return 0.0
     return 0.0
 
-def interval_to_bybit(interval):
-    """Map "15m","30m","1h","4h" to Bybit kline interval values."""
-    m = {"1m":"1", "3m":"3","5m":"5","15m":"15","30m":"30","1h":"60","2h":"120","4h":"240","1d":"D"}
-    return m.get(interval, interval)
+# ===== COINGECKO FUNCTIONS =====
+def get_coingecko_global():
+    """Return cached Coingecko global data."""
+    now = time.time()
+    if COINGECKO_CACHE["data"] and now - COINGECKO_CACHE["fetched_at"] < COINGECKO_CACHE_TTL:
+        return COINGECKO_CACHE["data"]
+    j = safe_get_json(COINGECKO_GLOBAL, {}, timeout=6, retries=1)
+    if j:
+        COINGECKO_CACHE["data"] = j
+        COINGECKO_CACHE["fetched_at"] = now
+    return j
 
-def get_klines(symbol, interval="15m", limit=200):
-    """Fetch klines from Bybit public API and return pandas DF with open/high/low/close/volume."""
-    symbol = sanitize_symbol(symbol)
-    if not symbol:
-        return None
-    iv = interval_to_bybit(interval)
-    params = {"symbol": symbol, "interval": iv, "limit": limit}
-    j = safe_get_json(BYBIT_KLINES, params=params, timeout=6, retries=1)
-    if not j or "result" not in j:
-        return None
-    data = j["result"]
-    if not isinstance(data, list):
-        return None
-    try:
-        # Bybit returns: {"id":..., "open":..., "high":..., "low":..., "close":..., "volume":..., "start_at":...}
-        df = pd.DataFrame(data)
-        if "open" not in df.columns:
-            # try older keys
-            df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close","v":"volume"})
-        df = df[["open","high","low","close","volume"]].astype(float)
-        df.columns = ["open","high","low","close","volume"]
-        return df
-    except Exception as e:
-        print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
-        return None
-
-def get_price(symbol):
-    symbol = sanitize_symbol(symbol)
-    if not symbol:
-        return None
-    j = safe_get_json(BYBIT_PRICE, {}, timeout=5, retries=1)
-    if not j or "result" not in j:
-        return None
-    for d in j["result"]:
-        if d.get("symbol","").upper() == symbol:
-            try:
-                return float(d.get("last_price", d.get("lastPrice", d.get("last", None))))
-            except:
-                return None
-    return None
+def get_dominance():
+    j = get_coingecko_global()
+    if not j or "data" not in j:
+        return {}
+    mc = j["data"].get("market_cap_percentage", {})
+    return {k.upper(): float(v) for k,v in mc.items()}
 
 # ===== INDICATORS =====
 def detect_crt(df):
