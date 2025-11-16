@@ -174,7 +174,7 @@ def get_price(symbol):
     return None
 
 def get_klines(symbol, interval="15m", limit=200):
-    """Fetch OHLCV data as pandas DataFrame from Bybit, robust against missing columns."""
+    """Fetch OHLCV data as pandas DataFrame from Bybit, supports both dict and list formats."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
@@ -191,16 +191,30 @@ def get_klines(symbol, interval="15m", limit=200):
         return None
 
     try:
-        df = pd.DataFrame(data)
-
-        # Rename keys if needed
-        if set(["open","high","low","close","volume"]).issubset(df.columns):
-            df = df[["open","high","low","close","volume"]].astype(float)
-        elif set(["o","h","l","c","v"]).issubset(df.columns):
-            df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close","v":"volume"})
-            df = df[["open","high","low","close","volume"]].astype(float)
+        # Detect format: dicts vs lists
+        if isinstance(data[0], dict):
+            # keys: try open/high/low/close/volume first, fallback to o/h/l/c/v
+            df = pd.DataFrame(data)
+            if set(["open","high","low","close","volume"]).issubset(df.columns):
+                df = df[["open","high","low","close","volume"]].astype(float)
+            elif set(["o","h","l","c","v"]).issubset(df.columns):
+                df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close","v":"volume"})
+                df = df[["open","high","low","close","volume"]].astype(float)
+            else:
+                print(f"⚠️ get_klines: unknown dict columns for {symbol} {interval} -> {df.columns.tolist()}")
+                return None
+        elif isinstance(data[0], list):
+            # assume standard Bybit list: [ts, open, high, low, close, volume, ...]
+            df = pd.DataFrame(data)
+            if df.shape[1] >= 6:
+                df = df.iloc[:,1:6]  # pick open, high, low, close, volume
+                df.columns = ["open","high","low","close","volume"]
+                df = df.astype(float)
+            else:
+                print(f"⚠️ get_klines: list format too short for {symbol} {interval} -> {df.shape}")
+                return None
         else:
-            print(f"⚠️ get_klines: unknown column format for {symbol} {interval} -> {df.columns.tolist()}")
+            print(f"⚠️ get_klines: unrecognized data format for {symbol} {interval}")
             return None
 
         return df
