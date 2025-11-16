@@ -381,19 +381,8 @@ def get_dominance():
     mc = j["data"].get("market_cap_percentage", {})
     return {k.upper(): float(v) for k,v in mc.items()}
 
-def dominance_ok(symbol, coingecko_data=None):
-    dom_data = coingecko_data or get_dominance()
-    btc_dom = dom_data.get("BTC", None)
-    eth_dom = dom_data.get("ETH", None)
-    if symbol.upper().startswith("BTC") or symbol.upper() == "BTCUSDT":
-        return True
-    if symbol.upper().startswith("ETH") or symbol.upper() == "ETHUSDT":
-        return True
-    sol_dom = dom_data.get("SOL", None)
-    if symbol.upper().startswith("SOL") and sol_dom is not None:
-        return sol_dom <= 63.0
-    if btc_dom is not None:
-        return btc_dom <= 62.0
+def dominance_ok(symbol):
+    # Ignore BTC dominance completely
     return True
 
 def sentiment_label(coingecko_data=None):
