@@ -174,20 +174,35 @@ def get_price(symbol):
     return None
 
 def get_klines(symbol, interval="15m", limit=200):
-    """Fetch OHLCV data as pandas DataFrame."""
+    """Fetch OHLCV data as pandas DataFrame from Bybit, robust against missing columns."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
+
     iv = interval_to_bybit(interval)
     params = {"category":"linear","symbol":symbol,"interval":iv,"limit":limit}
     j = safe_get_json(BYBIT_KLINES, params=params, timeout=6, retries=2)
     if not j or "result" not in j or "list" not in j["result"]:
         return None
+
     data = j["result"]["list"]
+    if not data:
+        print(f"⚠️ get_klines: empty data for {symbol} {interval}")
+        return None
+
     try:
         df = pd.DataFrame(data)
-        df = df.rename(columns={"open":"open","high":"high","low":"low","close":"close","volume":"volume"})
-        df = df[["open","high","low","close","volume"]].astype(float)
+
+        # Rename keys if needed
+        if set(["open","high","low","close","volume"]).issubset(df.columns):
+            df = df[["open","high","low","close","volume"]].astype(float)
+        elif set(["o","h","l","c","v"]).issubset(df.columns):
+            df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close","v":"volume"})
+            df = df[["open","high","low","close","volume"]].astype(float)
+        else:
+            print(f"⚠️ get_klines: unknown column format for {symbol} {interval} -> {df.columns.tolist()}")
+            return None
+
         return df
     except Exception as e:
         print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
