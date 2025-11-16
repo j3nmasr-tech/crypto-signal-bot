@@ -502,7 +502,41 @@ def analyze_symbol(symbol, coingecko_data=None):
         print(f"Skipping {symbol}: dominance filter blocked it.")
         skipped_signals += 1
         return False
+    # =====================================================================
+    #                    BTC GLOBAL PROTECTION LAYER
+    # =====================================================================
+    if symbol != "BTCUSDT":  # don't filter BTC itself
 
+        btc_ok, btc_direction, btc_sma_dir = btc_trend_agree()
+
+        # 1) Check trend agreement (1H vs 4H)
+        if btc_ok is False:
+            print(f"Skipping {symbol}: BTC trend disagreement (1H vs 4H).")
+            skipped_signals += 1
+            return False
+
+        if btc_direction is None:
+            print(f"Skipping {symbol}: BTC direction unclear.")
+            skipped_signals += 1
+            return False
+
+        # 2) Directional protection
+        if btc_direction == "bear":
+            print(f"Skipping {symbol}: BTC bearish → blocking BUY signals.")
+            skipped_signals += 1
+            return False
+
+        if btc_direction == "bull":
+            print(f"Skipping {symbol}: BTC bullish → blocking SELL signals.")
+            skipped_signals += 1
+            return False
+
+        # 3) Volatility spike protection
+        if btc_volatility_spike():
+            print(f"Skipping {symbol}: BTC volatility spike detected.")
+            skipped_signals += 1
+            return False
+            
     tf_confirmations = 0
     chosen_dir      = None
     chosen_entry    = None
