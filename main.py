@@ -44,7 +44,7 @@ WEIGHT_VOLUME = 0.15
 
 MIN_TF_SCORE  = 55.0          # slightly easier trend threshold (faster entries)
 CONF_MIN_TFS  = 1           # ✅ only 1 timeframe confirmation (main one, e.g. 15m)
-CONFIDENCE_MIN = 55.0       # keep as is for good quality
+CONFIDENCE_MIN = 60.0       # keep as is for good quality
 MIN_QUOTE_VOLUME = 300_000.0  # allows slightly smaller alts
 TOP_SYMBOLS = 10            # keep same
 
@@ -140,7 +140,7 @@ def safe_get_json(url, params=None, timeout=5, retries=2):
             print(f"⚠️ Unexpected error fetching {url}: {e}")
             return None
 
-===== INDICATORS, HELPERS, SENTIMENT, ADX, LOGGING & ANALYSIS (FULL) =====
+#===== INDICATORS, HELPERS, SENTIMENT, ADX, LOGGING & ANALYSIS (FULL) =====
 
 # ---- S Y M B O L  H E L P E R S ----
 def get_top_symbols(n=None):
