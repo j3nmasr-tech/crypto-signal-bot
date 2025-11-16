@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SIRTS v10 – Top 80 | Bybit + symbol sanitization + Aggressive Mode defaults
+# SIRTS v10 – Top 80 | Bybit V5 + symbol sanitization + Aggressive Mode defaults
 # Requirements: requests, pandas, numpy
 # BOT_TOKEN and CHAT_ID must be set as environment variables: "BOT_TOKEN", "CHAT_ID"
 
@@ -14,8 +14,7 @@ import csv
 
 # ===== SYMBOL SANITIZATION =====
 def sanitize_symbol(symbol: str) -> str:
-    """Ensure symbol only contains legal Bybit characters and is upper-case.
-       Allow letters, numbers, - _ . and max length 20."""
+    """Ensure symbol only contains legal Bybit characters and is upper-case."""
     if not symbol or not isinstance(symbol, str):
         return ""
     s = re.sub(r"[^A-Z0-9_.-]", "", symbol.upper())
@@ -43,24 +42,24 @@ WEIGHT_TURTLE = 0.25
 WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
-# ===== Aggressive-mode defaults (confirmed) =====
-MIN_TF_SCORE  = 55      # per-TF threshold
-CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
-CONFIDENCE_MIN = 60.0   # overall minimum confidence %
+# Aggressive-mode defaults
+MIN_TF_SCORE  = 55
+CONF_MIN_TFS  = 2
+CONFIDENCE_MIN = 60.0
 
 MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
 
-# ===== BYBIT PUBLIC ENDPOINTS =====
-BYBIT_KLINES = "https://api.bybit.com/public/linear/kline"
-BYBIT_TICKERS = "https://api.bybit.com/v2/public/tickers"
-BYBIT_PRICE = "https://api.bybit.com/v2/public/tickers"  # also used to fetch per-symbol price
+# ===== BYBIT v5 ENDPOINTS =====
+BYBIT_BASE = "https://api.bybit.com"
+BYBIT_KLINES  = f"{BYBIT_BASE}/v5/market/kline"
+BYBIT_TICKERS = f"{BYBIT_BASE}/v5/market/tickers"
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 
 LOG_CSV = "./sirts_v10_signals_bybit.csv"
 
-# ===== NEW SAFEGUARDS =====
-STRICT_TF_AGREE = False         # aggressive mode: allow missing TFs to not block
+# ===== SAFEGUARDS =====
+STRICT_TF_AGREE = False
 MAX_OPEN_TRADES = 10
 MAX_EXPOSURE_PCT = 0.20
 MIN_MARGIN_USD = 0.25
@@ -69,8 +68,8 @@ SYMBOL_BLACKLIST = set([])
 RECENT_SIGNAL_SIGNATURE_EXPIRE = 300
 recent_signals = {}
 
-# ===== RISK & CONFIDENCE =====
-BASE_RISK = 0.05   # AGGRESSIVE: 5% per trade default
+# ===== RISK =====
+BASE_RISK = 0.05
 MAX_RISK  = 0.06
 MIN_RISK  = 0.01
 
@@ -107,8 +106,8 @@ def send_message(text):
         print("Telegram send error:", e)
         return False
 
-def safe_get_json(url, params=None, timeout=5, retries=1):
-    """Fetch JSON with light retry/backoff and logging."""
+def safe_get_json(url, params=None, timeout=5, retries=2):
+    """Fetch JSON with retry/backoff."""
     for attempt in range(retries + 1):
         try:
             r = requests.get(url, params=params, timeout=timeout)
@@ -124,43 +123,75 @@ def safe_get_json(url, params=None, timeout=5, retries=1):
             print(f"⚠️ Unexpected error fetching {url}: {e}")
             return None
 
-# ===== BYBIT / SYMBOL FUNCTIONS =====
+# ===== BYBIT v5 FUNCTIONS =====
 def get_top_symbols(n=TOP_SYMBOLS):
-    """Get top n USDT pairs by quote volume using Bybit tickers."""
-    j = safe_get_json(BYBIT_TICKERS, {}, timeout=5, retries=1)
-    if not j or "result" not in j:
+    """Top USDT pairs by 24h quote volume."""
+    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear"}, timeout=5, retries=2)
+    if not j or "result" not in j or "list" not in j["result"]:
         return ["BTCUSDT","ETHUSDT"]
-    rows = j["result"]
-    usdt = []
+    rows = j["result"]["list"]
+    usdt_pairs = []
     for d in rows:
-        s = d.get("symbol","")
-        if not s.upper().endswith("USDT"):
+        sym = d.get("symbol","").upper()
+        if not sym.endswith("USDT"):
             continue
         try:
-            vol = float(d.get("volume", 0))  # base volume
-            last = float(d.get("last_price", d.get("lastPrice", 0)) or 0)
+            last = float(d.get("lastPrice",0))
+            vol  = float(d.get("volume24h",0))
             quote_vol = vol * (last or 1.0)
-            usdt.append((s.upper(), quote_vol))
-        except Exception:
+            usdt_pairs.append((sym, quote_vol))
+        except:
             continue
-    usdt.sort(key=lambda x: x[1], reverse=True)
-    syms = [sanitize_symbol(s[0]) for s in usdt[:n]]
-    if not syms:
-        return ["BTCUSDT","ETHUSDT"]
-    return syms
+    usdt_pairs.sort(key=lambda x: x[1], reverse=True)
+    syms = [sanitize_symbol(s[0]) for s in usdt_pairs[:n]]
+    return syms if syms else ["BTCUSDT","ETHUSDT"]
+
+def get_price(symbol):
+    symbol = sanitize_symbol(symbol)
+    if not symbol:
+        return None
+    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear","symbol":symbol}, timeout=5, retries=2)
+    if not j or "result" not in j or "list" not in j["result"]:
+        return None
+    for d in j["result"]["list"]:
+        if d.get("symbol","").upper() == symbol:
+            try:
+                return float(d.get("lastPrice", d.get("last_price", None)))
+            except:
+                return None
+    return None
+
+def get_klines(symbol, interval="15m", limit=200):
+    symbol = sanitize_symbol(symbol)
+    if not symbol:
+        return None
+    iv = interval_to_bybit(interval)
+    params = {"category":"linear","symbol":symbol,"interval":iv,"limit":limit}
+    j = safe_get_json(BYBIT_KLINES, params=params, timeout=6, retries=2)
+    if not j or "result" not in j or "list" not in j["result"]:
+        return None
+    data = j["result"]["list"]
+    try:
+        df = pd.DataFrame(data)
+        df = df.rename(columns={"open":"open","high":"high","low":"low","close":"close","volume":"volume"})
+        df = df[["open","high","low","close","volume"]].astype(float)
+        return df
+    except Exception as e:
+        print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
+        return None
 
 def get_24h_quote_volume(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return 0.0
-    j = safe_get_json(BYBIT_TICKERS, {}, timeout=5, retries=1)
-    if not j or "result" not in j:
+    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear","symbol":symbol}, timeout=5, retries=2)
+    if not j or "result" not in j or "list" not in j["result"]:
         return 0.0
-    for d in j["result"]:
+    for d in j["result"]["list"]:
         if d.get("symbol","").upper() == symbol:
             try:
-                vol = float(d.get("volume", 0))
-                last = float(d.get("last_price", d.get("lastPrice", 0)) or 0)
+                vol  = float(d.get("volume24h",0))
+                last = float(d.get("lastPrice",0))
                 return vol * (last or 1.0)
             except:
                 return 0.0
@@ -762,7 +793,7 @@ def summary():
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 Top80 (Bybit, Aggressive) deployed — sanitization + aggressive defaults active.")
+send_message("✅ SIRTS v10 Top80 (Bybit V5, Aggressive) deployed — sanitization + aggressive defaults active.")
 print("✅ SIRTS v10 Top80 deployed.")
 
 try:
