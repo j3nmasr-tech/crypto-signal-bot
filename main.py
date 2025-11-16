@@ -362,7 +362,7 @@ def pos_size_units(entry, sl, confidence_pct):
 
 # ===== SENTIMENT / DOMINANCE (with caching) =====
 COINGECKO_CACHE = {"data": None, "fetched_at": 0}
-COINGECKO_CACHE_TTL = 120  # seconds
+COINGECKO_CACHE_TTL = 300  # 5 minutes
 
 def get_coingecko_global():
     now = time.time()
