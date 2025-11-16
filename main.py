@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# SIRTS v10 – Top 80 | Bybit V5 + symbol sanitization + Aggressive Mode defaults
-# Requirements: requests, pandas, numpy
-# BOT_TOKEN and CHAT_ID must be set as environment variables: "BOT_TOKEN", "CHAT_ID"
-
 import os
 import re
 import time
@@ -11,6 +6,10 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import csv
+
+# ===== COINGECKO CACHING =====
+COINGECKO_CACHE = {"data": None, "fetched_at": 0}
+COINGECKO_CACHE_TTL = 120  # seconds, i.e., 2 minutes
 
 # ===== SYMBOL SANITIZATION =====
 def sanitize_symbol(symbol: str) -> str:
@@ -361,9 +360,18 @@ def pos_size_units(entry, sl, confidence_pct):
         return 0.0, 0.0, 0.0, risk_percent
     return round(units,8), round(margin_req,6), round(exposure,6), risk_percent
 
-# ===== SENTIMENT / DOMINANCE =====
+# ===== SENTIMENT / DOMINANCE (with caching) =====
+COINGECKO_CACHE = {"data": None, "fetched_at": 0}
+COINGECKO_CACHE_TTL = 120  # seconds
+
 def get_coingecko_global():
+    now = time.time()
+    if COINGECKO_CACHE["data"] and now - COINGECKO_CACHE["fetched_at"] < COINGECKO_CACHE_TTL:
+        return COINGECKO_CACHE["data"]
     j = safe_get_json(COINGECKO_GLOBAL, {}, timeout=6, retries=1)
+    if j:
+        COINGECKO_CACHE["data"] = j
+        COINGECKO_CACHE["fetched_at"] = now
     return j
 
 def get_dominance():
@@ -371,14 +379,9 @@ def get_dominance():
     if not j or "data" not in j:
         return {}
     mc = j["data"].get("market_cap_percentage", {})
-    # keys like 'btc', 'eth', etc.
     return {k.upper(): float(v) for k,v in mc.items()}
 
 def dominance_ok(symbol):
-    """Apply relaxed dominance rules:
-       - BTC/ETH -> ignore dominance
-       - SOL -> allow up to 63%
-       - others -> allow up to 62%"""
     dom = get_dominance()
     btc_dom = dom.get("BTC", None)
     eth_dom = dom.get("ETH", None)
@@ -389,11 +392,8 @@ def dominance_ok(symbol):
     sol_dom = dom.get("SOL", None)
     if symbol.upper().startswith("SOL") and sol_dom is not None:
         return sol_dom <= 63.0
-    # fallback to BTC dominance if available (conservative)
     if btc_dom is not None:
-        # if BTC dominance is very high, remain cautious
         return btc_dom <= 62.0
-    # if we can't fetch dominance, allow
     return True
 
 def sentiment_label():
