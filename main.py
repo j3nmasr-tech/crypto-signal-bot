@@ -381,24 +381,24 @@ def get_dominance():
     mc = j["data"].get("market_cap_percentage", {})
     return {k.upper(): float(v) for k,v in mc.items()}
 
-def dominance_ok(symbol):
-    dom = get_dominance()
-    btc_dom = dom.get("BTC", None)
-    eth_dom = dom.get("ETH", None)
+def dominance_ok(symbol, coingecko_data=None):
+    dom_data = coingecko_data or get_dominance()
+    btc_dom = dom_data.get("BTC", None)
+    eth_dom = dom_data.get("ETH", None)
     if symbol.upper().startswith("BTC") or symbol.upper() == "BTCUSDT":
         return True
     if symbol.upper().startswith("ETH") or symbol.upper() == "ETHUSDT":
         return True
-    sol_dom = dom.get("SOL", None)
+    sol_dom = dom_data.get("SOL", None)
     if symbol.upper().startswith("SOL") and sol_dom is not None:
         return sol_dom <= 63.0
     if btc_dom is not None:
         return btc_dom <= 62.0
     return True
 
-def sentiment_label():
+def sentiment_label(coingecko_data=None):
     try:
-        j = get_coingecko_global()
+        j = coingecko_data or get_coingecko_global()
         v = j["data"].get("market_cap_change_percentage_24h_usd", None)
         if v is None:
             return "neutral"
@@ -466,7 +466,7 @@ def log_trade_close(trade):
 def current_total_exposure():
     return sum([t.get("exposure", 0) for t in open_trades if t.get("st") == "open"])
 
-def analyze_symbol(symbol):
+def analyze_symbol(symbol, coingecko_data=None):
     global total_checked_signals, skipped_signals, signals_sent_total, last_trade_time, volatility_pause_until, STATS, recent_signals
     total_checked_signals += 1
     now = time.time()
@@ -491,8 +491,8 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # Check dominance early
-    if not dominance_ok(symbol):
+    # Check dominance early using cached CoinGecko data
+    if not dominance_ok(symbol, coingecko_data):
         print(f"Skipping {symbol}: dominance filter blocked it.")
         skipped_signals += 1
         return False
@@ -806,6 +806,9 @@ except Exception as e:
 # ===== MAIN LOOP =====
 while True:
     try:
+        # Pre-fetch CoinGecko global data once
+        coingecko_data = get_coingecko_global()
+
         if btc_volatility_spike():
             volatility_pause_until = time.time() + VOLATILITY_PAUSE
             send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
@@ -814,7 +817,7 @@ while True:
         for i, sym in enumerate(SYMBOLS, start=1):
             print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} …")
             try:
-                analyze_symbol(sym)
+                analyze_symbol(sym, coingecko_data=coingecko_data)
             except Exception as e:
                 print(f"⚠️ Error scanning {sym}: {e}")
             time.sleep(API_CALL_DELAY)
