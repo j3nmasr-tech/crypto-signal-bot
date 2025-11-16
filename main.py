@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+# SIRTS v10 — Bybit USDT Perps | Cleaned & Fixed Header
+# Requirements: requests, pandas, numpy
+# Environment variables: BOT_TOKEN, CHAT_ID
+
 import os
 import re
 import time
@@ -9,104 +14,135 @@ import csv
 
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+CHAT_ID   = os.getenv("CHAT_ID")
 
 CAPITAL = 80.0
 LEVERAGE = 30
 
-COOLDOWN_TIME_DEFAULT = 1800
-COOLDOWN_TIME_SUCCESS = 15 * 60
-COOLDOWN_TIME_FAIL = 45 * 60
+COOLDOWN_TIME_DEFAULT = 1800       # 30 min
+COOLDOWN_TIME_SUCCESS = 15 * 60    # 15 min
+COOLDOWN_TIME_FAIL    = 45 * 60    # 45 min
 
 VOLATILITY_THRESHOLD_PCT = 2.5
 VOLATILITY_PAUSE = 1800
 CHECK_INTERVAL = 300
-API_CALL_DELAY = 0.2
+API_CALL_DELAY = 0.2  # Bybit rate-limit safety
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
-WEIGHT_BIAS = 0.40
+WEIGHT_BIAS   = 0.40
 WEIGHT_TURTLE = 0.25
-WEIGHT_CRT = 0.20
+WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
-MIN_TF_SCORE = 55
-CONF_MIN_TFS = 2
+# Aggressive-mode defaults
+MIN_TF_SCORE  = 55
+CONF_MIN_TFS  = 2
 CONFIDENCE_MIN = 60.0
 
-MIN_QUOTE_VOLUME = 50_000_000  # $50M
+MIN_QUOTE_VOLUME = 50000000  # $50M 24h minimum
 TOP_SYMBOLS = 80
 
+# ===== BYBIT v5 ENDPOINTS =====
+BYBIT_BASE      = "https://api.bybit.com"
+BYBIT_KLINES    = f"{BYBIT_BASE}/v5/market/kline"
+BYBIT_TICKERS   = f"{BYBIT_BASE}/v5/market/tickers"
+BYBIT_PRICE     = f"{BYBIT_BASE}/v5/market/tickers"  # single price reuse
+COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+
+# ===== LOGGING =====
+LOG_CSV = "./sirts_v10_signals_bybit.csv"
+
+# ===== SAFEGUARDS =====
+STRICT_TF_AGREE = False
 MAX_OPEN_TRADES = 10
+MAX_EXPOSURE_PCT = 0.20
 MIN_MARGIN_USD = 0.25
+MIN_SL_DISTANCE_PCT = 0.0015
 SYMBOL_BLACKLIST = set([])
 RECENT_SIGNAL_SIGNATURE_EXPIRE = 300
 recent_signals = {}
 
-# ===== BYBIT & COINGECKO ENDPOINTS =====
-BYBIT_BASE = "https://api.bybit.com"
-BYBIT_KLINES = f"{BYBIT_BASE}/v5/market/kline"
-BYBIT_TICKERS = f"{BYBIT_BASE}/v5/market/tickers"
-COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+# ===== RISK SETTINGS =====
+BASE_RISK = 0.05
+MAX_RISK  = 0.06
+MIN_RISK  = 0.01
 
-# ===== COINGECKO CACHE =====
+# ===== STATE =====
+last_trade_time        = {}
+open_trades            = []
+signals_sent_total     = 0
+signals_hit_total      = 0
+signals_fail_total     = 0
+signals_breakeven      = 0
+total_checked_signals  = 0
+skipped_signals        = 0
+last_heartbeat         = time.time()
+last_summary           = time.time()
+volatility_pause_until = 0
+last_trade_result      = {}
+
+STATS = {
+    "by_side": {"BUY": {"sent":0,"hit":0,"fail":0,"breakeven":0},
+                "SELL":{"sent":0,"hit":0,"fail":0,"breakeven":0}},
+    "by_tf": {tf: {"sent":0,"hit":0,"fail":0,"breakeven":0} for tf in TIMEFRAMES}
+}
+
+# ===== COINGECKO CACHING =====
 COINGECKO_CACHE = {"data": None, "fetched_at": 0}
-COINGECKO_CACHE_TTL = 300  # 5 min
+COINGECKO_CACHE_TTL = 300  # 5 minutes
 
 # ===== HELPERS =====
 def sanitize_symbol(symbol: str) -> str:
-    """Keep symbol uppercase and valid for Bybit."""
+    """Ensure symbol only contains legal Bybit characters and is upper-case."""
     if not symbol or not isinstance(symbol, str):
         return ""
     s = re.sub(r"[^A-Z0-9_.-]", "", symbol.upper())
     return s[:20]
 
-def safe_get_json(url, params=None, timeout=5, retries=2):
-    """Fetch JSON with retries and backoff."""
-    for attempt in range(retries + 1):
-        try:
-            r = requests.get(url, params=params, timeout=timeout)
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.RequestException as e:
-            print(f"⚠️ API error ({e}) url={url} params={params} attempt={attempt+1}/{retries+1}")
-            if attempt < retries:
-                time.sleep(0.6 * (attempt + 1))
-    return None
-
 def send_message(text):
-    """Send Telegram message safely."""
     if not BOT_TOKEN or not CHAT_ID:
         print("Telegram not configured:", text)
         return False
     try:
         requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": text},
-            timeout=10
+            data={"chat_id": CHAT_ID, "text": text}, timeout=10
         )
         return True
     except Exception as e:
         print("Telegram send error:", e)
         return False
 
-# ===== INTERVAL MAPPING =====
-def interval_to_bybit(interval: str) -> str:
-    mapping = {
-        "1m":"1","3m":"3","5m":"5",
-        "15m":"15","30m":"30",
-        "1h":"60","2h":"120","4h":"240","1d":"D"
-    }
-    return mapping.get(interval, interval)
+def safe_get_json(url, params=None, timeout=5, retries=2):
+    """Fetch JSON with retry/backoff."""
+    for attempt in range(retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=timeout)
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ API request error ({e}) for {url} params={params} attempt={attempt+1}/{retries+1}")
+            if attempt < retries:
+                time.sleep(0.6 * (attempt + 1))
+                continue
+            return None
+        except Exception as e:
+            print(f"⚠️ Unexpected error fetching {url}: {e}")
+            return None
 
 # ===== BYBIT FUNCTIONS =====
+def interval_to_bybit(interval):
+    """Map "15m","30m","1h","4h" to Bybit kline intervals."""
+    m = {"1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1h":"60", "2h":"120", "4h":"240", "1d":"D"}
+    return m.get(interval, interval)
+
 def get_top_symbols(n=TOP_SYMBOLS):
-    """Return top N USDT pairs by 24h quote volume."""
+    """Top USDT pairs by 24h quote volume."""
     j = safe_get_json(BYBIT_TICKERS, params={"category":"linear"}, timeout=5, retries=2)
     if not j or "result" not in j or "list" not in j["result"]:
         return ["BTCUSDT","ETHUSDT"]
-    rows = j["result"]["list"]
     usdt_pairs = []
-    for d in rows:
+    for d in j["result"]["list"]:
         sym = d.get("symbol","").upper()
         if not sym.endswith("USDT"):
             continue
@@ -121,7 +157,8 @@ def get_top_symbols(n=TOP_SYMBOLS):
     syms = [sanitize_symbol(s[0]) for s in usdt_pairs[:n]]
     return syms if syms else ["BTCUSDT","ETHUSDT"]
 
-def get_price(symbol: str):
+def get_price(symbol):
+    """Fetch latest price from Bybit."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
@@ -131,13 +168,13 @@ def get_price(symbol: str):
     for d in j["result"]["list"]:
         if d.get("symbol","").upper() == symbol:
             try:
-                return float(d.get("lastPrice", d.get("last_price", d.get("last", None))))
+                return float(d.get("lastPrice", d.get("last_price", None)))
             except:
                 return None
     return None
 
-def get_klines(symbol: str, interval="15m", limit=200):
-    """Fetch klines and return pd.DataFrame with ohlcv."""
+def get_klines(symbol, interval="15m", limit=200):
+    """Fetch OHLCV data as pandas DataFrame."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
@@ -149,16 +186,14 @@ def get_klines(symbol: str, interval="15m", limit=200):
     data = j["result"]["list"]
     try:
         df = pd.DataFrame(data)
-        df = df.rename(columns={
-            "open":"open","high":"high","low":"low","close":"close","volume":"volume"
-        })
+        df = df.rename(columns={"open":"open","high":"high","low":"low","close":"close","volume":"volume"})
         df = df[["open","high","low","close","volume"]].astype(float)
         return df
     except Exception as e:
-        print(f"⚠️ get_klines parse error {symbol} {interval}: {e}")
+        print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
         return None
 
-def get_24h_quote_volume(symbol: str):
+def get_24h_quote_volume(symbol):
     """Return 24h quote volume in USD."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
