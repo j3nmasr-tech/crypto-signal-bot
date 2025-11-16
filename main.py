@@ -467,35 +467,61 @@ def analyze_symbol(symbol):
             skipped_signals += 1
             return False
 
+
         # ============================================================
-        # SCALP TF AGREEMENT — (15m + 30m) - SOFT RULE
+        # SCALP TF AGREEMENT — 15m + 30m STRICT, 1H SOFT-BLOCK
         # ============================================================
+
         def get_tf_bias_local(sym, tf):
             df = get_klines(sym, tf, 150)
             if df is None or len(df) < 50:
-                return None
-            b = smc_bias(df)
-            return "bull" if b == "bull" else "bear"
+                return None, None
+            bias = smc_bias(df)              # bull / bear
+            score = smc_confidence(df)       # strength 0–100
+            return bias, score
 
-        bias_15m = get_tf_bias_local(symbol, "15m")
-        bias_30m = get_tf_bias_local(symbol, "30m")
+        # ---- GET 15m, 30m, 1h ----
+        bias_15m, score_15m = get_tf_bias_local(symbol, "15m")
+        bias_30m, score_30m = get_tf_bias_local(symbol, "30m")
+        bias_1h, score_1h = get_tf_bias_local(symbol, "1h")
 
-        if None in (bias_15m, bias_30m):
-            print(f"Skipping {symbol}: TF bias missing (15m/30m).")
+        # ---- Missing data ----
+        if None in (bias_15m, bias_30m, bias_1h, score_15m, score_30m, score_1h):
+            print(f"Skipping {symbol}: TF bias/score missing (15m/30m/1h).")
             skipped_signals += 1
             return False
 
-        # soft-block only when opposite
-        if bias_15m == "bull" and bias_30m == "bear":
-            print(f"Soft skip {symbol}: 30m contradicts 15m (bull vs bear).")
-            skipped_signals += 1
-            return False
-        if bias_15m == "bear" and bias_30m == "bull":
-            print(f"Soft skip {symbol}: 30m contradicts 15m (bear vs bull).")
+        # ------------------------------------------------------------
+        # STRICT RULE — 15m and 30m MUST MATCH
+        # ------------------------------------------------------------
+        if bias_15m != bias_30m:
+            print(f"Skip {symbol}: STRICT mismatch 15m={bias_15m}, 30m={bias_30m}.")
             skipped_signals += 1
             return False
 
-        print(f"TF OK (SCALP) {symbol}: 15m={bias_15m}, 30m={bias_30m}")
+        # Score checks for 15m + 30m (protects against weak momentum)
+        if score_15m < 50 or score_30m < 50:
+            print(f"Skip {symbol}: weak TF strength 15m={score_15m}, 30m={score_30m}.")
+            skipped_signals += 1
+            return False
+
+        # ------------------------------------------------------------
+        # SOFT RULE — 1H only blocks if opposite direction
+        # ------------------------------------------------------------
+        if bias_1h != bias_15m:
+            print(f"Soft skip {symbol}: 1H contradicts scalp trend ({bias_1h} vs {bias_15m}).")
+            skipped_signals += 1
+            return False
+
+        # ------------------------------------------------------------
+        # PASSED ALL TF FILTERS
+        # ------------------------------------------------------------
+        print(
+            f"TF OK (SCALP) {symbol}: "
+            f"15m={bias_15m}({score_15m}), "
+            f"30m={bias_30m}({score_30m}), "
+            f"1h={bias_1h}({score_1h})"
+        )
 
         # ===== ADX + DOMINANCE FILTERS =====
         if symbol == "BTCUSDT":
@@ -504,7 +530,7 @@ def analyze_symbol(symbol):
             BTC_ADX_MIN = 16.0
         else:
             BTC_ADX_MIN = 18.0
-
+            
         if symbol not in ["BTCUSDT", "ETHUSDT"]:
             if btc_adx is None:
                 print(f"Skipping {symbol}: BTC ADX unavailable.")
