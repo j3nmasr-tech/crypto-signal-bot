@@ -44,9 +44,9 @@ WEIGHT_CRT    = 0.25   # more importance
 WEIGHT_VOLUME = 0.15   # unchanged
 
 # ===== Aggressive-mode defaults (confirmed) =====
-MIN_TF_SCORE  = 60
-CONF_MIN_TFS  = 3
-CONFIDENCE_MIN = 65.0
+MIN_TF_SCORE  = 55
+CONF_MIN_TFS  = 2
+CONFIDENCE_MIN = 60.0
 
 MIN_QUOTE_VOLUME = 20_000_000.0
 TOP_SYMBOLS = 40
