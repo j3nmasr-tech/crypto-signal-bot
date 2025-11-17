@@ -36,7 +36,7 @@ WEIGHT_VOLUME = 0.15
 
 # Aggressive-mode defaults
 MIN_TF_SCORE  = 55
-CONF_MIN_TFS  = 2
+CONF_MIN_TFS  = 3
 CONFIDENCE_MIN = 60.0
 
 MIN_QUOTE_VOLUME = 20000000  # $20M 24h minimum
