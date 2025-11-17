@@ -441,6 +441,28 @@ def btc_trend_agree():
     trend_by_sma = "bull" if (sma200 and btc_price > sma200) else ("bear" if sma200 and btc_price < sma200 else None)
     return (b1 == b4), (b1 if b1==b4 else None), trend_by_sma
 
+
+# ===== ENTRY FILTERS =====
+def entry_allowed(symbol, df):
+    # 1. Skip huge candle (ATR spike)
+    atr = get_atr(symbol)
+    last_candle = df.iloc[-1]
+    if atr is not None and abs(last_candle['close'] - last_candle['open']) > 1.8 * atr:
+        return False
+
+    # 2. Skip tight consolidation (tiny range)
+    recent_high = df['high'].iloc[-5:].max()
+    recent_low  = df['low'].iloc[-5:].min()
+    if (recent_high - recent_low)/recent_low < 0.003:
+        return False
+
+    # 3. Skip if BTC 1H and 4H disagree
+    btc_agree, btc_dir, btc_sma_trend = btc_trend_agree()
+    if btc_agree is None or not btc_agree:
+        return False
+
+    return True
+
 # ===== LOGGING =====
 def init_csv():
     if not os.path.exists(LOG_CSV):
