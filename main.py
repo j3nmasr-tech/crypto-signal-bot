@@ -38,18 +38,18 @@ CHECK_INTERVAL = 60
 API_CALL_DELAY = 0.05
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
-WEIGHT_BIAS   = 0.40
-WEIGHT_TURTLE = 0.25
-WEIGHT_CRT    = 0.20
-WEIGHT_VOLUME = 0.15
+WEIGHT_BIAS   = 0.25   # less dominance
+WEIGHT_TURTLE = 0.35   # strongest signal
+WEIGHT_CRT    = 0.25   # more importance
+WEIGHT_VOLUME = 0.15   # unchanged
 
 # ===== Aggressive-mode defaults (confirmed) =====
-MIN_TF_SCORE  = 55      # per-TF threshold
-CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
-CONFIDENCE_MIN = 60.0   # overall minimum confidence %
+MIN_TF_SCORE  = 60
+CONF_MIN_TFS  = 3
+CONFIDENCE_MIN = 65.0
 
-MIN_QUOTE_VOLUME = 5_000_000.0
-TOP_SYMBOLS = 80
+MIN_QUOTE_VOLUME = 20_000_000.0
+TOP_SYMBOLS = 40
 
 # ===== BYBIT v5 MARKET ENDPOINTS =====
 BYBIT_BASE    = "https://api.bybit.com/v5/market"
@@ -62,7 +62,7 @@ LOG_CSV = "./sirts_v10_signals.csv"
 
 # ===== NEW SAFEGUARDS =====
 STRICT_TF_AGREE = False         # aggressive mode: allow missing TFs to not block
-MAX_OPEN_TRADES = 6
+MAX_OPEN_TRADES = 60
 MAX_EXPOSURE_PCT = 0.20
 MIN_MARGIN_USD = 0.25
 MIN_SL_DISTANCE_PCT = 0.0015
@@ -251,45 +251,84 @@ def get_price(symbol):
                 return None
     return None
 
-# ===== INDICATORS =====
+# ===== IMPROVED INDICATORS =====
+
 def detect_crt(df):
     if len(df) < 12:
         return False, False
+
     last = df.iloc[-1]
-    o = float(last["open"]); h = float(last["high"]); l = float(last["low"]); c = float(last["close"]); v = float(last["volume"])
+    o = float(last["open"]); h = float(last["high"]); l = float(last["low"])
+    c = float(last["close"]); v = float(last["volume"])
+
     body_series = (df["close"] - df["open"]).abs()
-    avg_body = body_series.rolling(8, min_periods=6).mean().iloc[-1]
-    avg_vol  = df["volume"].rolling(8, min_periods=6).mean().iloc[-1]
+    avg_body = body_series.rolling(10, min_periods=6).mean().iloc[-1]   # was 8 → now 10
+    avg_vol  = df["volume"].rolling(10, min_periods=6).mean().iloc[-1]  # was 8 → now 10
+
     if np.isnan(avg_body) or np.isnan(avg_vol):
         return False, False
+
     body = abs(c - o)
     wick_up   = h - max(o, c)
     wick_down = min(o, c) - l
-    bull = (body < avg_body * 0.8) and (wick_down > avg_body * 0.5) and (v < avg_vol * 1.5) and (c > o)
-    bear = (body < avg_body * 0.8) and (wick_up   > avg_body * 0.5) and (v < avg_vol * 1.5) and (c < o)
+
+    # tightened logic: stronger wicks, smaller body, safer volume
+    bull = (
+        (body < avg_body * 0.7) and            # was 0.8
+        (wick_down > avg_body * 0.6) and       # was 0.5
+        (v < avg_vol * 1.2) and                # was 1.5
+        (c > o)
+    )
+
+    bear = (
+        (body < avg_body * 0.7) and
+        (wick_up > avg_body * 0.6) and
+        (v < avg_vol * 1.2) and
+        (c < o)
+    )
+
     return bull, bear
+
 
 def detect_turtle(df, look=20):
     if len(df) < look+2:
         return False, False
+
     ph = df["high"].iloc[-look-1:-1].max()
     pl = df["low"].iloc[-look-1:-1].min()
     last = df.iloc[-1]
-    bull = (last["low"] < pl) and (last["close"] > pl*1.002)
-    bear = (last["high"] > ph) and (last["close"] < ph*0.998)
+
+    # stronger breakout filter to reduce fake breakouts
+    bull = (last["low"] < pl) and (last["close"] > pl * 1.005)   # was 1.002
+    bear = (last["high"] > ph) and (last["close"] < ph * 0.995)  # was 0.998
+
     return bull, bear
+
 
 def smc_bias(df):
     e20 = df["close"].ewm(span=20).mean().iloc[-1]
     e50 = df["close"].ewm(span=50).mean().iloc[-1]
-    return "bull" if e20 > e50 else "bear"
+
+    # require slope difference, not just cross
+    if (e20 - e50) / e50 > 0.002:       # 0.2% upward slope required
+        return "bull"
+    else:
+        return "bear"
+
 
 def volume_ok(df):
     ma = df["volume"].rolling(20, min_periods=8).mean().iloc[-1]
     if np.isnan(ma):
         return True
+
     current = df["volume"].iloc[-1]
-    return current > ma * 1.3
+
+    # adaptive multiplier based on trend strength
+    e20 = df["close"].ewm(span=20).mean().iloc[-1]
+    e50 = df["close"].ewm(span=50).mean().iloc[-1]
+    mult = 1.2 if e20 > e50 else 1.1    # was fixed at 1.3
+
+    return current > ma * mult
 
 # ===== DOUBLE TIMEFRAME CONFIRMATION =====
 def get_direction_from_ma(df, span=20):
