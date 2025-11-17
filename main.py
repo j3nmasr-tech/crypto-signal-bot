@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# SIRTS v10 — Bybit USDT Perps | Cleaned & Fixed Header
+# SIRTS v10 – Top 80 | Bybit (v5) USDT Perps | Aggressive Mode defaults
 # Requirements: requests, pandas, numpy
-# Environment variables: BOT_TOKEN, CHAT_ID
+# BOT_TOKEN and CHAT_ID must be set as environment variables: "BOT_TOKEN", "CHAT_ID"
 
 import os
 import re
@@ -12,21 +12,30 @@ import numpy as np
 from datetime import datetime
 import csv
 
+# ===== SYMBOL SANITIZATION =====
+def sanitize_symbol(symbol: str) -> str:
+    """Ensure symbol only contains legal exchange characters and is upper-case.
+       Limit length to 20 chars."""
+    if not symbol or not isinstance(symbol, str):
+        return ""
+    s = re.sub(r"[^A-Z0-9_.-]", "", symbol.upper())
+    return s[:20]
+
 # ===== CONFIG =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 
 CAPITAL = 80.0
 LEVERAGE = 30
-
-COOLDOWN_TIME_DEFAULT = 1800       # 30 min
-COOLDOWN_TIME_SUCCESS = 15 * 60    # 15 min
-COOLDOWN_TIME_FAIL    = 45 * 60    # 45 min
+COOLDOWN_TIME_DEFAULT = 1800
+COOLDOWN_TIME_SUCCESS = 15 * 60
+COOLDOWN_TIME_FAIL    = 45 * 60
 
 VOLATILITY_THRESHOLD_PCT = 2.5
 VOLATILITY_PAUSE = 1800
 CHECK_INTERVAL = 60
-API_CALL_DELAY = 0.2  # Bybit rate-limit safety
+
+API_CALL_DELAY = 0.05
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
 WEIGHT_BIAS   = 0.40
@@ -34,27 +43,26 @@ WEIGHT_TURTLE = 0.25
 WEIGHT_CRT    = 0.20
 WEIGHT_VOLUME = 0.15
 
-# Aggressive-mode defaults
-MIN_TF_SCORE  = 55
-CONF_MIN_TFS  = 3
-CONFIDENCE_MIN = 60.0
+# ===== Aggressive-mode defaults (confirmed) =====
+MIN_TF_SCORE  = 55      # per-TF threshold
+CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
+CONFIDENCE_MIN = 60.0   # overall minimum confidence %
 
-MIN_QUOTE_VOLUME = 20000000  # $20M 24h minimum
+MIN_QUOTE_VOLUME = 5_000_000.0
 TOP_SYMBOLS = 80
 
-# ===== BYBIT v5 ENDPOINTS =====
-BYBIT_BASE      = "https://api.bybit.com"
-BYBIT_KLINES    = f"{BYBIT_BASE}/v5/market/kline"
-BYBIT_TICKERS   = f"{BYBIT_BASE}/v5/market/tickers"
-BYBIT_PRICE     = f"{BYBIT_BASE}/v5/market/tickers"  # single price reuse
-COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
+# ===== BYBIT v5 MARKET ENDPOINTS =====
+BYBIT_BASE    = "https://api.bybit.com/v5/market"
+BYBIT_KLINES  = f"{BYBIT_BASE}/kline"
+BYBIT_TICKERS = f"{BYBIT_BASE}/tickers"
+BYBIT_GLOBAL  = "https://api.coingecko.com/api/v3/global"  # kept for optional dominance use
+FNG_API       = "https://api.alternative.me/fng/?limit=1"
 
-# ===== LOGGING =====
-LOG_CSV = "./sirts_v10_signals_bybit.csv"
+LOG_CSV = "./sirts_v10_signals.csv"
 
-# ===== SAFEGUARDS =====
-STRICT_TF_AGREE = False
-MAX_OPEN_TRADES = 10
+# ===== NEW SAFEGUARDS =====
+STRICT_TF_AGREE = False         # aggressive mode: allow missing TFs to not block
+MAX_OPEN_TRADES = 6
 MAX_EXPOSURE_PCT = 0.20
 MIN_MARGIN_USD = 0.25
 MIN_SL_DISTANCE_PCT = 0.0015
@@ -62,24 +70,24 @@ SYMBOL_BLACKLIST = set([])
 RECENT_SIGNAL_SIGNATURE_EXPIRE = 300
 recent_signals = {}
 
-# ===== RISK SETTINGS =====
-BASE_RISK = 0.05
+# ===== RISK & CONFIDENCE =====
+BASE_RISK = 0.02
 MAX_RISK  = 0.06
 MIN_RISK  = 0.01
 
 # ===== STATE =====
-last_trade_time        = {}
-open_trades            = []
-signals_sent_total     = 0
-signals_hit_total      = 0
-signals_fail_total     = 0
-signals_breakeven      = 0
-total_checked_signals  = 0
-skipped_signals        = 0
-last_heartbeat         = time.time()
-last_summary           = time.time()
-volatility_pause_until = 0
-last_trade_result      = {}
+last_trade_time      = {}
+open_trades          = []
+signals_sent_total   = 0
+signals_hit_total    = 0
+signals_fail_total   = 0
+signals_breakeven    = 0
+total_checked_signals= 0
+skipped_signals      = 0
+last_heartbeat       = time.time()
+last_summary         = time.time()
+volatility_pause_until= 0
+last_trade_result = {}
 
 STATS = {
     "by_side": {"BUY": {"sent":0,"hit":0,"fail":0,"breakeven":0},
@@ -87,101 +95,99 @@ STATS = {
     "by_tf": {tf: {"sent":0,"hit":0,"fail":0,"breakeven":0} for tf in TIMEFRAMES}
 }
 
-# ===== COINGECKO CACHING =====
-COINGECKO_CACHE = {"data": None, "fetched_at": 0}
-COINGECKO_CACHE_TTL = 300  # 5 minutes
-
 # ===== HELPERS =====
-def sanitize_symbol(symbol: str) -> str:
-    """Ensure symbol only contains legal Bybit characters and is upper-case."""
-    if not symbol or not isinstance(symbol, str):
-        return ""
-    s = re.sub(r"[^A-Z0-9_.-]", "", symbol.upper())
-    return s[:20]
-
 def send_message(text):
     if not BOT_TOKEN or not CHAT_ID:
         print("Telegram not configured:", text)
         return False
     try:
-        requests.post(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": text}, timeout=10
-        )
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                      data={"chat_id": CHAT_ID, "text": text}, timeout=10)
         return True
     except Exception as e:
         print("Telegram send error:", e)
         return False
 
-def safe_get_json(url, params=None, timeout=3, retries=1):
-    """Fetch JSON safely, fast fail if API is slow."""
+def safe_get_json(url, params=None, timeout=5, retries=1):
+    """Fetch JSON with light retry/backoff and logging."""
     for attempt in range(retries + 1):
         try:
             r = requests.get(url, params=params, timeout=timeout)
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
-            print(f"⚠️ API request error ({e}) for {url}, attempt {attempt+1}/{retries+1}")
+            print(f"⚠️ API request error ({e}) for {url} params={params} attempt={attempt+1}/{retries+1}")
             if attempt < retries:
-                time.sleep(0.3)
+                time.sleep(0.5 * (attempt + 1))
                 continue
             return None
         except Exception as e:
             print(f"⚠️ Unexpected error fetching {url}: {e}")
             return None
 
-# ===== BYBIT FUNCTIONS =====
-def interval_to_bybit(interval):
-    """Map "15m","30m","1h","4h" to Bybit kline intervals."""
-    m = {"1m":"1", "3m":"3", "5m":"5", "15m":"15", "30m":"30", "1h":"60", "2h":"120", "4h":"240", "1d":"D"}
-    return m.get(interval, interval)
+# ===== BYBIT-SPECIFIC DATA ACCESSORS =====
+_interval_map = {
+    "1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+    "1h": "60", "2h": "120", "4h": "240", "1d": "D", "1w": "W"
+}
 
 def get_top_symbols(n=TOP_SYMBOLS):
-    """Top USDT pairs by 24h quote volume."""
-    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear"}, timeout=5, retries=2)
+    """
+    Return top USDT pairs by 24h quote volume using Bybit tickers endpoint.
+    Uses volume24h * lastPrice as quote volume when available.
+    """
+    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear"}, timeout=6, retries=1)
     if not j or "result" not in j or "list" not in j["result"]:
         return ["BTCUSDT","ETHUSDT"]
     usdt_pairs = []
     for d in j["result"]["list"]:
-        sym = d.get("symbol","").upper()
+        sym = sanitize_symbol(d.get("symbol","").upper())
         if not sym.endswith("USDT"):
             continue
         try:
-            last = float(d.get("lastPrice",0))
-            vol  = float(d.get("volume24h",0))
+            last = float(d.get("lastPrice") or d.get("last_price") or 0)
+            vol = float(d.get("volume24h", 0) or d.get("volume", 0) or 0)
             quote_vol = vol * (last or 1.0)
             usdt_pairs.append((sym, quote_vol))
         except:
             continue
     usdt_pairs.sort(key=lambda x: x[1], reverse=True)
-    syms = [sanitize_symbol(s[0]) for s in usdt_pairs[:n]]
+    syms = [s[0] for s in usdt_pairs[:n]]
     return syms if syms else ["BTCUSDT","ETHUSDT"]
 
-def get_price(symbol):
-    """Fetch latest price from Bybit."""
+def get_24h_quote_volume(symbol):
+    """Return 24h quote volume in USD from Bybit tickers endpoint."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
-        return None
-    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear","symbol":symbol}, timeout=5, retries=2)
+        return 0.0
+    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear","symbol":symbol}, timeout=6, retries=1)
     if not j or "result" not in j or "list" not in j["result"]:
-        return None
+        return 0.0
     for d in j["result"]["list"]:
         if d.get("symbol","").upper() == symbol:
             try:
-                return float(d.get("lastPrice", d.get("last_price", None)))
+                vol  = float(d.get("volume24h", 0) or d.get("volume", 0) or 0)
+                last = float(d.get("lastPrice", 0) or d.get("last_price", 0) or 0)
+                return vol * (last or 1.0)
             except:
-                return None
-    return None
+                return 0.0
+    return 0.0
+
+def interval_to_bybit(interval):
+    return _interval_map.get(interval, interval)
 
 def get_klines(symbol, interval="15m", limit=200):
-    """Fetch OHLCV data as pandas DataFrame from Bybit, supports both dict and list formats."""
+    """
+    Fetch OHLCV data as pandas DataFrame from Bybit v5 /kline endpoint.
+    Handles list-of-lists and list-of-dicts formats robustly.
+    """
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
 
     iv = interval_to_bybit(interval)
     params = {"category":"linear","symbol":symbol,"interval":iv,"limit":limit}
-    j = safe_get_json(BYBIT_KLINES, params=params, timeout=6, retries=2)
+    j = safe_get_json(BYBIT_KLINES, params=params, timeout=8, retries=1)
     if not j or "result" not in j or "list" not in j["result"]:
         return None
 
@@ -193,21 +199,28 @@ def get_klines(symbol, interval="15m", limit=200):
     try:
         # Detect format: dicts vs lists
         if isinstance(data[0], dict):
-            # keys: try open/high/low/close/volume first, fallback to o/h/l/c/v
             df = pd.DataFrame(data)
+            # Bybit dict keys often include 'open','high','low','close','volume' already
             if set(["open","high","low","close","volume"]).issubset(df.columns):
                 df = df[["open","high","low","close","volume"]].astype(float)
             elif set(["o","h","l","c","v"]).issubset(df.columns):
                 df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close","v":"volume"})
                 df = df[["open","high","low","close","volume"]].astype(float)
             else:
-                print(f"⚠️ get_klines: unknown dict columns for {symbol} {interval} -> {df.columns.tolist()}")
-                return None
+                # attempt to pick first five numeric-like columns as fallback
+                numeric_cols = [c for c in df.columns if df[c].dtype.kind in "fi"]
+                if len(numeric_cols) >= 5:
+                    df = df[numeric_cols[:5]].astype(float)
+                    df.columns = ["open","high","low","close","volume"]
+                else:
+                    print(f"⚠️ get_klines: unknown dict columns for {symbol} {interval} -> {df.columns.tolist()}")
+                    return None
         elif isinstance(data[0], list):
             # assume standard Bybit list: [ts, open, high, low, close, volume, ...]
             df = pd.DataFrame(data)
             if df.shape[1] >= 6:
-                df = df.iloc[:,1:6]  # pick open, high, low, close, volume
+                # typical ordering: [start, open, high, low, close, volume, ...]
+                df = df.iloc[:,1:6]
                 df.columns = ["open","high","low","close","volume"]
                 df = df.astype(float)
             else:
@@ -222,42 +235,21 @@ def get_klines(symbol, interval="15m", limit=200):
         print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
         return None
 
-def get_24h_quote_volume(symbol):
-    """Return 24h quote volume in USD."""
+def get_price(symbol):
+    """Fetch latest price from Bybit tickers endpoint."""
     symbol = sanitize_symbol(symbol)
     if not symbol:
-        return 0.0
-    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear","symbol":symbol}, timeout=5, retries=2)
+        return None
+    j = safe_get_json(BYBIT_TICKERS, params={"category":"linear","symbol":symbol}, timeout=6, retries=1)
     if not j or "result" not in j or "list" not in j["result"]:
-        return 0.0
+        return None
     for d in j["result"]["list"]:
         if d.get("symbol","").upper() == symbol:
             try:
-                vol  = float(d.get("volume24h",0))
-                last = float(d.get("lastPrice",0))
-                return vol * (last or 1.0)
+                return float(d.get("lastPrice") or d.get("last_price") or d.get("last") or 0)
             except:
-                return 0.0
-    return 0.0
-
-# ===== COINGECKO FUNCTIONS =====
-def get_coingecko_global():
-    """Return cached Coingecko global data."""
-    now = time.time()
-    if COINGECKO_CACHE["data"] and now - COINGECKO_CACHE["fetched_at"] < COINGECKO_CACHE_TTL:
-        return COINGECKO_CACHE["data"]
-    j = safe_get_json(COINGECKO_GLOBAL, {}, timeout=6, retries=1)
-    if j:
-        COINGECKO_CACHE["data"] = j
-        COINGECKO_CACHE["fetched_at"] = now
-    return j
-
-def get_dominance():
-    j = get_coingecko_global()
-    if not j or "data" not in j:
-        return {}
-    mc = j["data"].get("market_cap_percentage", {})
-    return {k.upper(): float(v) for k,v in mc.items()}
+                return None
+    return None
 
 # ===== INDICATORS =====
 def detect_crt(df):
@@ -340,7 +332,6 @@ def trade_params(symbol, entry, side, atr_multiplier_sl=1.7, tp_mults=(1.8,2.8,3
     atr = get_atr(symbol)
     if atr is None:
         return None
-    # TUNE: keep atr realistically bounded relative to price
     atr = max(min(atr, entry * 0.05), entry * 0.0001)
     adj_sl_multiplier = atr_multiplier_sl * (1.0 + (0.5 - conf_multiplier) * 0.5)
     if side == "BUY":
@@ -358,8 +349,6 @@ def trade_params(symbol, entry, side, atr_multiplier_sl=1.7, tp_mults=(1.8,2.8,3
 def pos_size_units(entry, sl, confidence_pct):
     conf = max(0.0, min(100.0, confidence_pct))
     risk_percent = MIN_RISK + (MAX_RISK - MIN_RISK) * (conf / 100.0)
-    # override to aggressive base risk:
-    risk_percent = max(risk_percent, BASE_RISK)
     risk_percent = max(MIN_RISK, min(MAX_RISK, risk_percent))
     risk_usd     = CAPITAL * risk_percent
     sl_dist      = abs(entry - sl)
@@ -377,46 +366,23 @@ def pos_size_units(entry, sl, confidence_pct):
         return 0.0, 0.0, 0.0, risk_percent
     return round(units,8), round(margin_req,6), round(exposure,6), risk_percent
 
-# ===== SENTIMENT / DOMINANCE (with caching) =====
-COINGECKO_CACHE = {"data": None, "fetched_at": 0}
-COINGECKO_CACHE_TTL = 300  # 5 minutes
-
-def get_coingecko_global():
-    now = time.time()
-    if COINGECKO_CACHE["data"] and now - COINGECKO_CACHE["fetched_at"] < COINGECKO_CACHE_TTL:
-        return COINGECKO_CACHE["data"]
-    j = safe_get_json(COINGECKO_GLOBAL, {}, timeout=6, retries=1)
-    if j:
-        COINGECKO_CACHE["data"] = j
-        COINGECKO_CACHE["fetched_at"] = now
-    return j
-
-def get_dominance():
-    j = get_coingecko_global()
-    if not j or "data" not in j:
-        return {}
-    mc = j["data"].get("market_cap_percentage", {})
-    return {k.upper(): float(v) for k,v in mc.items()}
-
-def dominance_ok(symbol, coingecko_data=None):
-    # Ignore BTC dominance completely for now
-    return True
-
-def sentiment_label(coingecko_data=None):
+# ===== SENTIMENT =====
+def get_fear_greed_value():
+    j = safe_get_json(FNG_API, {}, timeout=3, retries=1)
     try:
-        j = coingecko_data or get_coingecko_global()
-        v = j["data"].get("market_cap_change_percentage_24h_usd", None)
-        if v is None:
-            return "neutral"
-        if v < -2.0:
-            return "fear"
-        if v > 2.0:
-            return "greed"
-        return "neutral"
+        return int(j["data"][0]["value"])
     except:
-        return "neutral"
+        return 50
 
-# ===== BTC TREND & VOLATILITY (Bybit data) =====
+def sentiment_label():
+    v = get_fear_greed_value()
+    if v < 25:
+        return "fear"
+    if v > 75:
+        return "greed"
+    return "neutral"
+
+# ===== BTC TREND & VOLATILITY =====
 def btc_volatility_spike():
     df = get_klines("BTCUSDT", "5m", 3)
     if df is None or len(df) < 3:
@@ -472,7 +438,7 @@ def log_trade_close(trade):
 def current_total_exposure():
     return sum([t.get("exposure", 0) for t in open_trades if t.get("st") == "open"])
 
-def analyze_symbol(symbol, coingecko_data=None):
+def analyze_symbol(symbol):
     global total_checked_signals, skipped_signals, signals_sent_total, last_trade_time, volatility_pause_until, STATS, recent_signals
     total_checked_signals += 1
     now = time.time()
@@ -497,46 +463,6 @@ def analyze_symbol(symbol, coingecko_data=None):
         skipped_signals += 1
         return False
 
-    # Check dominance early using cached CoinGecko data
-    if not dominance_ok(symbol, coingecko_data):
-        print(f"Skipping {symbol}: dominance filter blocked it.")
-        skipped_signals += 1
-        return False
-    # =====================================================================
-    #                    BTC GLOBAL PROTECTION LAYER
-    # =====================================================================
-    if symbol != "BTCUSDT":  # don't filter BTC itself
-
-        btc_ok, btc_direction, btc_sma_dir = btc_trend_agree()
-
-        # 1) Check trend agreement (1H vs 4H)
-        if btc_ok is False:
-            print(f"Skipping {symbol}: BTC trend disagreement (1H vs 4H).")
-            skipped_signals += 1
-            return False
-
-        if btc_direction is None:
-            print(f"Skipping {symbol}: BTC direction unclear.")
-            skipped_signals += 1
-            return False
-
-        # 2) Directional protection
-        if btc_direction == "bear":
-            print(f"Skipping {symbol}: BTC bearish → blocking BUY signals.")
-            skipped_signals += 1
-            return False
-
-        if btc_direction == "bull":
-            print(f"Skipping {symbol}: BTC bullish → blocking SELL signals.")
-            skipped_signals += 1
-            return False
-
-        # 3) Volatility spike protection
-        if btc_volatility_spike():
-            print(f"Skipping {symbol}: BTC volatility spike detected.")
-            skipped_signals += 1
-            return False
-            
     tf_confirmations = 0
     chosen_dir      = None
     chosen_entry    = None
@@ -605,6 +531,7 @@ def analyze_symbol(symbol, coingecko_data=None):
     confidence_pct = max(0.0, min(100.0, confidence_pct))
 
     # --- Aggressive Mode Safety Check (small fallback to avoid junk signals) ---
+    # Ensure minimum absolute thresholds even in aggressive mode
     if confidence_pct < CONFIDENCE_MIN or tf_confirmations < CONF_MIN_TFS:
         print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
         skipped_signals += 1
@@ -656,8 +583,7 @@ def analyze_symbol(symbol, coingecko_data=None):
               f"🎯 TP1:{tp1} TP2:{tp2} TP3:{tp3}\n"
               f"🛑 SL: {sl}\n"
               f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
-              f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}\n"
-              f"🧾 TFs confirming: {', '.join(confirming_tfs)}")
+              f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}")
 
     send_message(header)
 
@@ -669,7 +595,7 @@ def analyze_symbol(symbol, coingecko_data=None):
         "tp2": tp2,
         "tp3": tp3,
         "sl": sl,
-        "st": "open",           # signal-only mode: we keep a record for tracking TP/SL via market checks
+        "st": "open",
         "units": units,
         "margin": margin,
         "exposure": exposure,
@@ -680,7 +606,6 @@ def analyze_symbol(symbol, coingecko_data=None):
         "tp3_taken": False,
         "placed_at": time.time(),
         "entry_tf": chosen_tf,
-        "breakdown": breakdown_per_tf
     }
     open_trades.append(trade_obj)
     signals_sent_total += 1
@@ -709,7 +634,7 @@ def check_trades():
         if side == "BUY":
             if not t["tp1_taken"] and p >= t["tp1"]:
                 t["tp1_taken"] = True
-                t["sl"] = t["entry"]  # move to BE
+                t["sl"] = t["entry"]
                 send_message(f"🎯 {t['s']} TP1 Hit {p} — SL moved to breakeven.")
                 STATS["by_side"]["BUY"]["hit"] += 1
                 STATS["by_tf"][t["entry_tf"]]["hit"] += 1
@@ -833,7 +758,7 @@ def summary():
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 Top80 (Bybit V5, Aggressive) deployed — sanitization + aggressive defaults active.")
+send_message("✅ SIRTS v10 Top80 (Bybit v5, Aggressive) deployed — sanitization + aggressive defaults active.")
 print("✅ SIRTS v10 Top80 deployed.")
 
 try:
@@ -846,9 +771,6 @@ except Exception as e:
 # ===== MAIN LOOP =====
 while True:
     try:
-        # Pre-fetch CoinGecko global data once
-        coingecko_data = get_coingecko_global()
-
         if btc_volatility_spike():
             volatility_pause_until = time.time() + VOLATILITY_PAUSE
             send_message(f"⚠️ BTC volatility spike detected — pausing signals for {VOLATILITY_PAUSE//60} minutes.")
@@ -857,7 +779,7 @@ while True:
         for i, sym in enumerate(SYMBOLS, start=1):
             print(f"[{i}/{len(SYMBOLS)}] Scanning {sym} …")
             try:
-                analyze_symbol(sym, coingecko_data=coingecko_data)
+                analyze_symbol(sym)
             except Exception as e:
                 print(f"⚠️ Error scanning {sym}: {e}")
             time.sleep(API_CALL_DELAY)
