@@ -38,17 +38,26 @@ CHECK_INTERVAL = 60
 API_CALL_DELAY = 0.06  # slightly higher for Bybit
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
-WEIGHT_BIAS   = 0.35    # Reduced from 0.40 - bias alone isn't enough
-WEIGHT_TURTLE = 0.30    # Increased from 0.25 - turtle signals are more reliable
-WEIGHT_CRT    = 0.25    # Increased from 0.20 - candlestick patterns matter more
-WEIGHT_VOLUME = 0.10    # Reduced from 0.15 - volume is less predictive in crypto
 
-# ===== Aggressive-mode defaults (confirmed) =====
-MIN_TF_SCORE  = 50      # Reduced from 55 - more flexible per-TF scoring
-CONF_MIN_TFS  = 2       # Keep at 2 - good balance for aggressive mode  
-CONFIDENCE_MIN = 55.0   # Reduced from 60.0 - allows more quality signals through
+# ===== IMPROVED SIGNAL QUALITY WEIGHTS =====
+WEIGHT_BIAS   = 0.25    # Less on basic trend
+WEIGHT_TURTLE = 0.35    # More on breakouts (high probability)
+WEIGHT_CRT    = 0.30    # More on reversals  
+WEIGHT_VOLUME = 0.10    # Minimal volume reliance
+
+# ===== HIGH ACCURACY THRESHOLDS =====
+MIN_TF_SCORE  = 60      # Higher per-TF threshold
+CONF_MIN_TFS  = 3       # Require 3/4 timeframes to agree
+CONFIDENCE_MIN = 70.0   # Higher overall confidence
+
 MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
+
+# ===== ADVANCED FILTERS CONFIG =====
+ENABLE_MARKET_REGIME_FILTER = True
+ENABLE_SR_FILTER = True
+ENABLE_MOMENTUM_FILTER = True
+ENABLE_BTC_DOMINANCE_FILTER = True
 
 # ===== BYBIT PUBLIC ENDPOINTS =====
 BYBIT_KLINES = "https://api.bybit.com/v5/market/kline"
@@ -58,9 +67,15 @@ COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 
 LOG_CSV = "./sirts_v10_signals_bybit.csv"
 
+# ===== CACHE FOR COINGECKO API =====
+DOMINANCE_CACHE = {"data": None, "timestamp": 0}
+DOMINANCE_CACHE_DURATION = 300  # 5 minutes cache
+SENTIMENT_CACHE = {"data": None, "timestamp": 0}
+SENTIMENT_CACHE_DURATION = 300  # 5 minutes cache
+
 # ===== NEW SAFEGUARDS =====
 STRICT_TF_AGREE = False         # aggressive mode: allow missing TFs to not block
-MAX_OPEN_TRADES = 10
+MAX_OPEN_TRADES = 200
 MAX_EXPOSURE_PCT = 0.20
 MIN_MARGIN_USD = 0.25
 MIN_SL_DISTANCE_PCT = 0.0015
@@ -214,6 +229,204 @@ def get_price(symbol):
                 return None
     return None
 
+# ===== ADVANCED FILTERS =====
+
+def market_hours_ok():
+    """Market Regime Filter - Only trade during high-probability hours"""
+    if not ENABLE_MARKET_REGIME_FILTER:
+        return True
+        
+    utc_hour = datetime.utcnow().hour
+    # Avoid low volatility periods (late US / Early Asia)
+    if utc_hour in [0, 1, 2, 3, 4]:
+        return False
+    # Avoid Asia/London overlap end
+    if utc_hour in [12, 13, 14]:
+        return False
+    return True
+
+def calculate_rsi(series, period=14):
+    """Calculate RSI for momentum confirmation"""
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def momentum_ok(df, direction):
+    """Momentum Confirmation Filter"""
+    if not ENABLE_MOMENTUM_FILTER:
+        return True
+        
+    if len(df) < 20:
+        return False
+    
+    # RSI check
+    rsi = calculate_rsi(df["close"], 14)
+    current_rsi = rsi.iloc[-1] if not rsi.empty else 50
+    
+    # Avoid overbought/oversold extremes
+    if direction == "BUY" and current_rsi > 65:
+        return False
+    if direction == "SELL" and current_rsi < 35:
+        return False
+    
+    # Price momentum check
+    price_5 = df["close"].iloc[-5] if len(df) >= 5 else df["close"].iloc[0]
+    price_trend = df["close"].iloc[-1] > price_5
+    
+    if direction == "BUY" and not price_trend:
+        return False
+    if direction == "SELL" and price_trend:
+        return False
+        
+    return True
+
+def near_key_level(symbol, price, threshold=0.015):
+    """Support/Resistance Confirmation - Avoid key levels"""
+    if not ENABLE_SR_FILTER:
+        return False
+        
+    df_4h = get_klines(symbol, "4h", 100)
+    if df_4h is None or len(df_4h) < 50:
+        return False
+    
+    # Calculate recent support/resistance
+    resistance = df_4h["high"].rolling(20).max().iloc[-1]
+    support = df_4h["low"].rolling(20).min().iloc[-1]
+    
+    # Check if near key levels (within 1.5%)
+    near_resistance = abs(price - resistance) / price < threshold
+    near_support = abs(price - support) / price < threshold
+    
+    return near_support or near_resistance
+
+def btc_dominance_filter(symbol):
+    """BTC Dominance Filter - Market sentiment awareness"""
+    if not ENABLE_BTC_DOMINANCE_FILTER:
+        return True
+        
+    dom = get_dominance_cached()
+    btc_dom = dom.get("BTC", 50)
+    
+    # High BTC dominance = risk-off, be careful with alts
+    if btc_dom > 55 and not symbol.startswith("BTC"):
+        return False
+    
+    # Low BTC dominance = risk-on, alts perform better
+    if btc_dom < 45 and symbol.startswith("BTC"):
+        return False
+        
+    return True
+
+# ===== CACHED COINGECKO FUNCTIONS =====
+def get_coingecko_global():
+    """Get CoinGecko global data with rate limiting protection"""
+    try:
+        j = safe_get_json(COINGECKO_GLOBAL, {}, timeout=6, retries=1)
+        return j
+    except Exception as e:
+        print(f"⚠️ CoinGecko API error: {e}")
+        return None
+
+def get_dominance_cached():
+    """Get dominance data with caching to avoid rate limits"""
+    global DOMINANCE_CACHE
+    
+    now = time.time()
+    # Return cached data if still valid
+    if (DOMINANCE_CACHE["data"] is not None and 
+        now - DOMINANCE_CACHE["timestamp"] < DOMINANCE_CACHE_DURATION):
+        return DOMINANCE_CACHE["data"]
+    
+    # Fetch fresh data
+    j = get_coingecko_global()
+    if not j or "data" not in j:
+        # Return cached data even if expired as fallback
+        return DOMINANCE_CACHE["data"] or {}
+    
+    mc = j["data"].get("market_cap_percentage", {})
+    dominance_data = {k.upper(): float(v) for k,v in mc.items()}
+    
+    # Update cache
+    DOMINANCE_CACHE = {
+        "data": dominance_data,
+        "timestamp": now
+    }
+    
+    return dominance_data
+
+def get_sentiment_cached():
+    """Get sentiment data with caching"""
+    global SENTIMENT_CACHE
+    
+    now = time.time()
+    # Return cached data if still valid
+    if (SENTIMENT_CACHE["data"] is not None and 
+        now - SENTIMENT_CACHE["timestamp"] < SENTIMENT_CACHE_DURATION):
+        return SENTIMENT_CACHE["data"]
+    
+    # Fetch fresh data
+    j = get_coingecko_global()
+    if not j or "data" not in j:
+        return SENTIMENT_CACHE["data"] or "neutral"
+    
+    v = j["data"].get("market_cap_change_percentage_24h_usd", None)
+    if v is None:
+        sentiment = "neutral"
+    elif v < -2.0:
+        sentiment = "fear"
+    elif v > 2.0:
+        sentiment = "greed"
+    else:
+        sentiment = "neutral"
+    
+    # Update cache
+    SENTIMENT_CACHE = {
+        "data": sentiment,
+        "timestamp": now
+    }
+    
+    return sentiment
+
+# ===== UPDATED DOMINANCE & SENTIMENT FUNCTIONS =====
+def get_dominance():
+    """Backward compatibility wrapper"""
+    return get_dominance_cached()
+
+def dominance_ok(symbol):
+    """Apply relaxed dominance rules with fallback"""
+    dom = get_dominance_cached()
+    
+    # If we can't get dominance data, allow the trade
+    if not dom:
+        print(f"⚠️ No dominance data available, allowing {symbol}")
+        return True
+    
+    btc_dom = dom.get("BTC", None)
+    eth_dom = dom.get("ETH", None)
+    
+    if symbol.upper().startswith("BTC") or symbol.upper() == "BTCUSDT":
+        return True
+    if symbol.upper().startswith("ETH") or symbol.upper() == "ETHUSDT":
+        return True
+        
+    sol_dom = dom.get("SOL", None)
+    if symbol.upper().startswith("SOL") and sol_dom is not None:
+        return sol_dom <= 63.0
+        
+    # Fallback to BTC dominance if available
+    if btc_dom is not None:
+        return btc_dom <= 62.0
+        
+    # If all else fails, allow the trade
+    return True
+
+def sentiment_label():
+    """Get sentiment with caching"""
+    return get_sentiment_cached()
+
 # ===== INDICATORS =====
 def detect_crt(df):
     if len(df) < 12:
@@ -353,55 +566,6 @@ def pos_size_units(entry, sl, confidence_pct):
         return 0.0, 0.0, 0.0, risk_percent
     return round(units,8), round(margin_req,6), round(exposure,6), risk_percent
 
-# ===== SENTIMENT / DOMINANCE =====
-def get_coingecko_global():
-    j = safe_get_json(COINGECKO_GLOBAL, {}, timeout=6, retries=1)
-    return j
-
-def get_dominance():
-    j = get_coingecko_global()
-    if not j or "data" not in j:
-        return {}
-    mc = j["data"].get("market_cap_percentage", {})
-    # keys like 'btc', 'eth', etc.
-    return {k.upper(): float(v) for k,v in mc.items()}
-
-def dominance_ok(symbol):
-    """Apply relaxed dominance rules:
-       - BTC/ETH -> ignore dominance
-       - SOL -> allow up to 63%
-       - others -> allow up to 62%"""
-    dom = get_dominance()
-    btc_dom = dom.get("BTC", None)
-    eth_dom = dom.get("ETH", None)
-    if symbol.upper().startswith("BTC") or symbol.upper() == "BTCUSDT":
-        return True
-    if symbol.upper().startswith("ETH") or symbol.upper() == "ETHUSDT":
-        return True
-    sol_dom = dom.get("SOL", None)
-    if symbol.upper().startswith("SOL") and sol_dom is not None:
-        return sol_dom <= 63.0
-    # fallback to BTC dominance if available (conservative)
-    if btc_dom is not None:
-        # if BTC dominance is very high, remain cautious
-        return btc_dom <= 62.0
-    # if we can't fetch dominance, allow
-    return True
-
-def sentiment_label():
-    try:
-        j = get_coingecko_global()
-        v = j["data"].get("market_cap_change_percentage_24h_usd", None)
-        if v is None:
-            return "neutral"
-        if v < -2.0:
-            return "fear"
-        if v > 2.0:
-            return "greed"
-        return "neutral"
-    except:
-        return "neutral"
-
 # ===== BTC TREND & VOLATILITY (Bybit data) =====
 def btc_volatility_spike():
     df = get_klines("BTCUSDT", "5m", 3)
@@ -454,7 +618,7 @@ def log_trade_close(trade):
     except Exception as e:
         print("log_trade_close error:", e)
 
-# ===== ANALYSIS & SIGNAL GENERATION =====
+# ===== ENHANCED ANALYSIS & SIGNAL GENERATION =====
 def current_total_exposure():
     return sum([t.get("exposure", 0) for t in open_trades if t.get("st") == "open"])
 
@@ -473,6 +637,11 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
+    # Market Regime Filter
+    if not market_hours_ok():
+        skipped_signals += 1
+        return False
+
     vol24 = get_24h_quote_volume(symbol)
     if vol24 < MIN_QUOTE_VOLUME:
         skipped_signals += 1
@@ -483,9 +652,15 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-# Check dominance early
+    # Check dominance early
     if not dominance_ok(symbol):
         print(f"Skipping {symbol}: dominance filter blocked it.")
+        skipped_signals += 1
+        return False
+
+    # BTC Dominance Filter
+    if not btc_dominance_filter(symbol):
+        print(f"Skipping {symbol}: BTC dominance filter blocked.")
         skipped_signals += 1
         return False
 
@@ -530,22 +705,18 @@ def analyze_symbol(symbol):
             "ts_s": bool(ts_s)
         }
         
-        # Relaxed timeframe agreement - only filter weak signals when TFs disagree
+        # Simple timeframe agreement check - only skip if TFs strongly disagree
         if tf_index < len(TIMEFRAMES) - 1:
             higher_tf = TIMEFRAMES[tf_index + 1]
             tf_agreement = tf_agree(symbol, tf, higher_tf)
             
-            # Only skip if: weak signal AND timeframes disagree
-            if not tf_agreement and current_tf_strength < 65:  # 65 is medium strength
+            # Only skip if timeframes strongly disagree AND signal is weak
+            if not tf_agreement and current_tf_strength < 60:
                 breakdown_per_tf[tf] = {
                     "skipped_due_tf_disagree": True, 
-                    "strength": current_tf_strength,
-                    "agreement": False
+                    "strength": current_tf_strength
                 }
                 continue
-            elif not tf_agreement:
-                # Strong signal but TFs disagree - still process but note it
-                breakdown_data["tf_disagreement_override"] = True
 
         breakdown_per_tf[tf] = breakdown_data
         per_tf_scores.append(current_tf_strength)
@@ -578,7 +749,26 @@ def analyze_symbol(symbol):
         print(f"Skipping {symbol}: safety check failed (conf={confidence_pct:.1f}%, tfs={tf_confirmations}).")
         skipped_signals += 1
         return False
-    # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
+
+    # Advanced Filters Check
+    entry = get_price(symbol)
+    if entry is None:
+        skipped_signals += 1
+        return False
+
+    # Support/Resistance Filter
+    if near_key_level(symbol, entry):
+        print(f"Skipping {symbol}: too close to key support/resistance level.")
+        skipped_signals += 1
+        return False
+
+    # Momentum Filter
+    df_main = get_klines(symbol, "15m")  # Use 15m for momentum check
+    if df_main is not None and not momentum_ok(df_main, chosen_dir):
+        print(f"Skipping {symbol}: momentum filter failed.")
+        skipped_signals += 1
+        return False
 
     # global open-trade / exposure limits
     if len([t for t in open_trades if t.get("st") == "open"]) >= MAX_OPEN_TRADES:
@@ -595,11 +785,6 @@ def analyze_symbol(symbol):
     recent_signals[sig] = time.time()
 
     sentiment = sentiment_label()
-
-    entry = get_price(symbol)
-    if entry is None:
-        skipped_signals += 1
-        return False
 
     conf_multiplier = max(0.5, min(1.3, confidence_pct / 100.0 + 0.5))
     tp_sl = trade_params(symbol, entry, chosen_dir, conf_multiplier=conf_multiplier)
@@ -626,7 +811,8 @@ def analyze_symbol(symbol):
               f"🛑 SL: {sl}\n"
               f"💰 Units:{units} | Margin≈${margin} | Exposure≈${exposure}\n"
               f"⚠ Risk used: {risk_used*100:.2f}% | Confidence: {confidence_pct:.1f}% | Sentiment:{sentiment}\n"
-              f"🧾 TFs confirming: {', '.join(confirming_tfs)}")
+              f"🧾 TFs confirming: {', '.join(confirming_tfs)}\n"
+              f"🔍 Advanced Filters: ✅ PASSED")
 
     send_message(header)
 
@@ -661,7 +847,7 @@ def analyze_symbol(symbol):
         tp1, tp2, tp3, sl, chosen_tf, units, margin, exposure,
         risk_used*100, confidence_pct, "open", str(breakdown_per_tf)
     ])
-    print(f"✅ Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
+    print(f"✅ HIGH QUALITY Signal sent for {symbol} at entry {entry}. Confidence {confidence_pct:.1f}%")
     return True
 
 # ===== TRADE CHECK (TP/SL/BREAKEVEN) =====
@@ -802,8 +988,8 @@ def summary():
 
 # ===== STARTUP =====
 init_csv()
-send_message("✅ SIRTS v10 Top80 (Bybit, Aggressive) deployed — sanitization + aggressive defaults active.")
-print("✅ SIRTS v10 Top80 deployed.")
+send_message("✅ SIRTS v10 High-Accuracy Mode Deployed\n🎯 Target: 85%+ Accuracy | 20+ Signals Daily\n🔧 Advanced Filters: ACTIVE\n🔄 API Rate Limit Protection: ENABLED")
+print("✅ SIRTS v10 High-Accuracy Mode deployed with API protection.")
 
 try:
     SYMBOLS = get_top_symbols(TOP_SYMBOLS)
