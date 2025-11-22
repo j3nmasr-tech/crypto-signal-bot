@@ -51,9 +51,9 @@ MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
 
 # ===== BYBIT PUBLIC ENDPOINTS =====
-BYBIT_KLINES = "https://api.bybit.com/public/linear/kline"
-BYBIT_TICKERS = "https://api.bybit.com/v2/public/tickers"
-BYBIT_PRICE = "https://api.bybit.com/v2/public/tickers"  # also used to fetch per-symbol price
+BYBIT_KLINES = "https://api.bybit.com/v5/market/kline"
+BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
+BYBIT_PRICE = "https://api.bybit.com/v5/market/tickers"
 COINGECKO_GLOBAL = "https://api.coingecko.com/api/v3/global"
 
 LOG_CSV = "./sirts_v10_signals_bybit.csv"
@@ -126,18 +126,19 @@ def safe_get_json(url, params=None, timeout=5, retries=1):
 # ===== BYBIT / SYMBOL FUNCTIONS =====
 def get_top_symbols(n=TOP_SYMBOLS):
     """Get top n USDT pairs by quote volume using Bybit tickers."""
-    j = safe_get_json(BYBIT_TICKERS, {}, timeout=5, retries=1)
-    if not j or "result" not in j:
+    params = {"category": "linear"}
+    j = safe_get_json(BYBIT_TICKERS, params=params, timeout=5, retries=1)
+    if not j or "result" not in j or "list" not in j["result"]:
         return ["BTCUSDT","ETHUSDT"]
-    rows = j["result"]
+    rows = j["result"]["list"]
     usdt = []
     for d in rows:
         s = d.get("symbol","")
         if not s.upper().endswith("USDT"):
             continue
         try:
-            vol = float(d.get("volume", 0))  # base volume
-            last = float(d.get("last_price", d.get("lastPrice", 0)) or 0)
+            vol = float(d.get("volume24h", 0))
+            last = float(d.get("lastPrice", 0)) or 0
             quote_vol = vol * (last or 1.0)
             usdt.append((s.upper(), quote_vol))
         except Exception:
@@ -152,14 +153,15 @@ def get_24h_quote_volume(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return 0.0
-    j = safe_get_json(BYBIT_TICKERS, {}, timeout=5, retries=1)
-    if not j or "result" not in j:
+    params = {"category": "linear", "symbol": symbol}
+    j = safe_get_json(BYBIT_TICKERS, params=params, timeout=5, retries=1)
+    if not j or "result" not in j or "list" not in j["result"]:
         return 0.0
-    for d in j["result"]:
+    for d in j["result"]["list"]:
         if d.get("symbol","").upper() == symbol:
             try:
-                vol = float(d.get("volume", 0))
-                last = float(d.get("last_price", d.get("lastPrice", 0)) or 0)
+                vol = float(d.get("volume24h", 0))
+                last = float(d.get("lastPrice", 0)) or 0
                 return vol * (last or 1.0)
             except:
                 return 0.0
@@ -176,21 +178,21 @@ def get_klines(symbol, interval="15m", limit=200):
     if not symbol:
         return None
     iv = interval_to_bybit(interval)
-    params = {"symbol": symbol, "interval": iv, "limit": limit}
+    params = {
+        "category": "linear",
+        "symbol": symbol, 
+        "interval": iv, 
+        "limit": limit
+    }
     j = safe_get_json(BYBIT_KLINES, params=params, timeout=6, retries=1)
-    if not j or "result" not in j:
+    if not j or "result" not in j or "list" not in j["result"]:
         return None
-    data = j["result"]
+    data = j["result"]["list"]
     if not isinstance(data, list):
         return None
     try:
-        # Bybit returns: {"id":..., "open":..., "high":..., "low":..., "close":..., "volume":..., "start_at":...}
-        df = pd.DataFrame(data)
-        if "open" not in df.columns:
-            # try older keys
-            df = df.rename(columns={"o":"open","h":"high","l":"low","c":"close","v":"volume"})
+        df = pd.DataFrame(data, columns=["startTime", "open", "high", "low", "close", "volume", "turnover"])
         df = df[["open","high","low","close","volume"]].astype(float)
-        df.columns = ["open","high","low","close","volume"]
         return df
     except Exception as e:
         print(f"⚠️ get_klines parse error for {symbol} {interval}: {e}")
@@ -200,13 +202,14 @@ def get_price(symbol):
     symbol = sanitize_symbol(symbol)
     if not symbol:
         return None
-    j = safe_get_json(BYBIT_PRICE, {}, timeout=5, retries=1)
-    if not j or "result" not in j:
+    params = {"category": "linear", "symbol": symbol}
+    j = safe_get_json(BYBIT_PRICE, params=params, timeout=5, retries=1)
+    if not j or "result" not in j or "list" not in j["result"]:
         return None
-    for d in j["result"]:
+    for d in j["result"]["list"]:
         if d.get("symbol","").upper() == symbol:
             try:
-                return float(d.get("last_price", d.get("lastPrice", d.get("last", None))))
+                return float(d.get("lastPrice", 0))
             except:
                 return None
     return None
