@@ -480,7 +480,7 @@ def analyze_symbol(symbol):
         skipped_signals += 1
         return False
 
-    # Check dominance early
+# Check dominance early
     if not dominance_ok(symbol):
         print(f"Skipping {symbol}: dominance filter blocked it.")
         skipped_signals += 1
@@ -502,13 +502,35 @@ def analyze_symbol(symbol):
 
         tf_index = TIMEFRAMES.index(tf)
         
+        # Calculate indicators FIRST
+        crt_b, crt_s = detect_crt(df)
+        ts_b, ts_s = detect_turtle(df)
+        bias        = smc_bias(df)
+        vol_ok      = volume_ok(df)
+
+        bull_score = (WEIGHT_CRT*(1 if crt_b else 0) + WEIGHT_TURTLE*(1 if ts_b else 0) +
+                      WEIGHT_VOLUME*(1 if vol_ok else 0) + WEIGHT_BIAS*(1 if bias=="bull" else 0))*100
+        bear_score = (WEIGHT_CRT*(1 if crt_s else 0) + WEIGHT_TURTLE*(1 if ts_s else 0) +
+                      WEIGHT_VOLUME*(1 if vol_ok else 0) + WEIGHT_BIAS*(1 if bias=="bear" else 0))*100
+
+        current_tf_strength = max(bull_score, bear_score)
+        
+        # Store breakdown data (convert numpy bool to Python bool)
+        breakdown_data = {
+            "bull_score": int(bull_score),
+            "bear_score": int(bear_score),
+            "bias": bias,
+            "vol_ok": bool(vol_ok),  # Convert numpy bool to Python bool
+            "crt_b": bool(crt_b),
+            "crt_s": bool(crt_s),
+            "ts_b": bool(ts_b),
+            "ts_s": bool(ts_s)
+        }
+        
         # Relaxed timeframe agreement - only filter weak signals when TFs disagree
         if tf_index < len(TIMEFRAMES) - 1:
             higher_tf = TIMEFRAMES[tf_index + 1]
             tf_agreement = tf_agree(symbol, tf, higher_tf)
-            
-            # Calculate signal strength for this TF
-            current_tf_strength = max(bull_score, bear_score)
             
             # Only skip if: weak signal AND timeframes disagree
             if not tf_agreement and current_tf_strength < 65:  # 65 is medium strength
@@ -520,30 +542,10 @@ def analyze_symbol(symbol):
                 continue
             elif not tf_agreement:
                 # Strong signal but TFs disagree - still process but note it
-                breakdown_per_tf[tf]["tf_disagreement_override"] = True
+                breakdown_data["tf_disagreement_override"] = True
 
-        crt_b, crt_s = detect_crt(df)
-        ts_b, ts_s = detect_turtle(df)
-        bias        = smc_bias(df)
-        vol_ok      = volume_ok(df)
-
-        bull_score = (WEIGHT_CRT*(1 if crt_b else 0) + WEIGHT_TURTLE*(1 if ts_b else 0) +
-                      WEIGHT_VOLUME*(1 if vol_ok else 0) + WEIGHT_BIAS*(1 if bias=="bull" else 0))*100
-        bear_score = (WEIGHT_CRT*(1 if crt_s else 0) + WEIGHT_TURTLE*(1 if ts_s else 0) +
-                      WEIGHT_VOLUME*(1 if vol_ok else 0) + WEIGHT_BIAS*(1 if bias=="bear" else 0))*100
-
-        breakdown_per_tf[tf] = {
-            "bull_score": int(bull_score),
-            "bear_score": int(bear_score),
-            "bias": bias,
-            "vol_ok": vol_ok,
-            "crt_b": bool(crt_b),
-            "crt_s": bool(crt_s),
-            "ts_b": bool(ts_b),
-            "ts_s": bool(ts_s)
-        }
-
-        per_tf_scores.append(max(bull_score, bear_score))
+        breakdown_per_tf[tf] = breakdown_data
+        per_tf_scores.append(current_tf_strength)
 
         if bull_score >= MIN_TF_SCORE:
             tf_confirmations += 1
