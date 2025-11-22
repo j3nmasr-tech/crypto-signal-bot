@@ -46,9 +46,9 @@ WEIGHT_CRT    = 0.30    # More on reversals
 WEIGHT_VOLUME = 0.10    # Minimal volume reliance
 
 # ===== HIGH ACCURACY THRESHOLDS =====
-MIN_TF_SCORE  = 60      # Higher per-TF threshold
-CONF_MIN_TFS  = 3       # Require 3/4 timeframes to agree
-CONFIDENCE_MIN = 70.0   # Higher overall confidence
+MIN_TF_SCORE  = 50      # More flexible per-TF scoring
+CONF_MIN_TFS  = 2       # Require 2/4 timeframes to agree
+CONFIDENCE_MIN = 55.0   # Good confidence threshold
 
 MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
