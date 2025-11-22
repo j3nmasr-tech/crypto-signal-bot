@@ -38,16 +38,15 @@ CHECK_INTERVAL = 60
 API_CALL_DELAY = 0.06  # slightly higher for Bybit
 
 TIMEFRAMES = ["15m", "30m", "1h", "4h"]
-WEIGHT_BIAS   = 0.40
-WEIGHT_TURTLE = 0.25
-WEIGHT_CRT    = 0.20
-WEIGHT_VOLUME = 0.15
+WEIGHT_BIAS   = 0.35    # Reduced from 0.40 - bias alone isn't enough
+WEIGHT_TURTLE = 0.30    # Increased from 0.25 - turtle signals are more reliable
+WEIGHT_CRT    = 0.25    # Increased from 0.20 - candlestick patterns matter more
+WEIGHT_VOLUME = 0.10    # Reduced from 0.15 - volume is less predictive in crypto
 
 # ===== Aggressive-mode defaults (confirmed) =====
-MIN_TF_SCORE  = 55      # per-TF threshold
-CONF_MIN_TFS  = 2       # require 2 out of 4 timeframes to agree (aggressive)
-CONFIDENCE_MIN = 60.0   # overall minimum confidence %
-
+MIN_TF_SCORE  = 50      # Reduced from 55 - more flexible per-TF scoring
+CONF_MIN_TFS  = 2       # Keep at 2 - good balance for aggressive mode  
+CONFIDENCE_MIN = 55.0   # Reduced from 60.0 - allows more quality signals through
 MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
 
@@ -264,11 +263,32 @@ def tf_agree(symbol, tf_low, tf_high):
     df_low = get_klines(symbol, tf_low, 100)
     df_high = get_klines(symbol, tf_high, 100)
     if df_low is None or df_high is None or len(df_low) < 30 or len(df_high) < 30:
-        return not STRICT_TF_AGREE
+        return True  # More forgiving - assume agreement if data missing
+    
     dir_low = get_direction_from_ma(df_low)
     dir_high = get_direction_from_ma(df_high)
+    
     if dir_low is None or dir_high is None:
-        return not STRICT_TF_AGREE
+        return True  # Forgiving on errors
+    
+    # Allow some flexibility - consider it agreement if directions are not opposite
+    if dir_low == dir_high:
+        return True
+    else:
+        # Check if the difference is significant enough to matter
+        ma_low = df_low["close"].ewm(span=20).mean().iloc[-1]
+        ma_high = df_high["close"].ewm(span=20).mean().iloc[-1]
+        price_low = df_low["close"].iloc[-1]
+        price_high = df_high["close"].iloc[-1]
+        
+        # If both are close to their MAs, it's not a strong disagreement
+        low_diff = abs(price_low - ma_low) / ma_low
+        high_diff = abs(price_high - ma_high) / ma_high
+        
+        # If both are in "neutral" zone (close to MA), consider it agreement
+        if low_diff < 0.005 and high_diff < 0.005:  # Both within 0.5% of MA
+            return True
+    
     return dir_low == dir_high
 
 # ===== ATR & POSITION SIZING =====
@@ -481,11 +501,26 @@ def analyze_symbol(symbol):
             continue
 
         tf_index = TIMEFRAMES.index(tf)
+        
+        # Relaxed timeframe agreement - only filter weak signals when TFs disagree
         if tf_index < len(TIMEFRAMES) - 1:
             higher_tf = TIMEFRAMES[tf_index + 1]
-            if not tf_agree(symbol, tf, higher_tf):
-                breakdown_per_tf[tf] = {"skipped_due_tf_disagree": True}
+            tf_agreement = tf_agree(symbol, tf, higher_tf)
+            
+            # Calculate signal strength for this TF
+            current_tf_strength = max(bull_score, bear_score)
+            
+            # Only skip if: weak signal AND timeframes disagree
+            if not tf_agreement and current_tf_strength < 65:  # 65 is medium strength
+                breakdown_per_tf[tf] = {
+                    "skipped_due_tf_disagree": True, 
+                    "strength": current_tf_strength,
+                    "agreement": False
+                }
                 continue
+            elif not tf_agreement:
+                # Strong signal but TFs disagree - still process but note it
+                breakdown_per_tf[tf]["tf_disagreement_override"] = True
 
         crt_b, crt_s = detect_crt(df)
         ts_b, ts_s = detect_turtle(df)
