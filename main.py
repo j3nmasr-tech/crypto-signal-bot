@@ -54,10 +54,10 @@ MIN_QUOTE_VOLUME = 1_000_000.0
 TOP_SYMBOLS = 80
 
 # ===== ADVANCED FILTERS CONFIG =====
-ENABLE_MARKET_REGIME_FILTER = True
-ENABLE_SR_FILTER = True
-ENABLE_MOMENTUM_FILTER = True
-ENABLE_BTC_DOMINANCE_FILTER = True
+ENABLE_MARKET_REGIME_FILTER = False  # Disabled - too restrictive
+ENABLE_SR_FILTER = True              # Keep enabled - good filter
+ENABLE_MOMENTUM_FILTER = True        # Keep enabled - good filter  
+ENABLE_BTC_DOMINANCE_FILTER = False  # Disabled - too restrictive
 
 # ===== BYBIT PUBLIC ENDPOINTS =====
 BYBIT_KLINES = "https://api.bybit.com/v5/market/kline"
